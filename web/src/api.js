@@ -1,0 +1,77 @@
+/*
+  Every route answers the same envelope: { ok, data, error }. Unwrapping it in
+  one place means no component has to remember to check `ok`, and a failure
+  arrives as a thrown Error with the server's own message rather than as
+  `undefined` three renders later.
+*/
+
+async function get(path, signal) {
+  const response = await fetch(path, { signal, cache: "no-store" });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`${path} returned ${response.status} and no JSON`);
+  }
+  if (!payload.ok) throw new Error(payload.error || `${path} failed`);
+  return payload.data;
+}
+
+export const fetchHealth = (signal) => get("/api/health", signal);
+
+export function fetchFeed({ limit = 90, order = "new", minLiquidity = 0 } = {}, signal) {
+  const q = new URLSearchParams({
+    limit: String(limit),
+    order,
+    min_liquidity: String(minLiquidity),
+  });
+  return get(`/api/feed?${q}`, signal);
+}
+
+export const fetchToken = (address, signal) => get(`/api/token/${address}`, signal);
+export const fetchHolders = (address, signal) => get(`/api/token/${address}/holders`, signal);
+
+/* ------------------------------------------------------------ formatting */
+
+export function usd(value) {
+  const n = Number(value) || 0;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}b`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}m`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}k`;
+  if (n > 0 && n < 1) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(0)}`;
+}
+
+export function age(minutes) {
+  const m = Number(minutes) || 0;
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
+}
+
+export const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—");
+
+/*
+  A token's real logo lives in its metadata and reaches us through DexScreener.
+  For the first minutes of its life there isn't one, and a grey box in every
+  row makes the whole feed look broken — so an address-derived mark stands in.
+  Same address, same picture, every time.
+*/
+export function fallbackAvatar(address = "") {
+  let h = 2166136261;
+  for (let i = 0; i < address.length; i++) {
+    h ^= address.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const hue = Math.abs(h) % 360;
+  const hue2 = (hue + 55 + (Math.abs(h >> 7) % 140)) % 360;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="hsl(${hue},64%,54%)"/>` +
+    `<stop offset="1" stop-color="hsl(${hue2},58%,34%)"/></linearGradient></defs>` +
+    `<rect width="32" height="32" fill="url(#g)"/>` +
+    `<circle cx="16" cy="16" r="10" fill="none" stroke="rgba(0,0,0,.42)" stroke-width="3.4"/>` +
+    `<circle cx="16" cy="16" r="4" fill="rgba(255,255,255,.7)"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}

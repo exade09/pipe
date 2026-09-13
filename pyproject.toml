@@ -1,0 +1,14 @@
+[project]
+name = "pipe-terminal"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+# Vercel's Python runtime installs what is declared here. Keep it in step with
+# requirements.txt, which is what local development installs.
+dependencies = [
+    "eth-utils>=6.0,<7",
+    "eth-abi>=5.0,<6",
+    "psycopg[binary]>=3.2,<4",
+]
+
+[tool.vercel]
+entrypoint = "api.index:handler"

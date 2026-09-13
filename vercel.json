@@ -1,0 +1,16 @@
+{
+  "buildCommand": "npm --prefix web install && npm --prefix web run build",
+  "outputDirectory": "web/dist",
+  "functions": { "api/index.py": { "maxDuration": 60 } },
+  "crons": [{ "path": "/api/index", "schedule": "* * * * *" }],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    }
+  ]
+}
