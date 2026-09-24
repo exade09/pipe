@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 """
-JSON-RPC against Robinhood Chain.
+Solana JSON-RPC.
 
-Two things here are not decoration. The User-Agent header is required: without
-it the node answers 403 with an empty body, which is indistinguishable from
-the endpoint being gone. And batching is required: blocks land every 0.1s, so
-anything that reads per-token state one call at a time falls behind the chain
-faster than it catches up.
+Two things here were learned by trying rather than by reading docs.
+
+The public endpoint serves getAccountInfo, getTokenSupply and getSlot without
+a key, which covers the security checks this terminal cares most about — a
+mint's mint authority and freeze authority are the two facts that decide
+whether the supply can grow under you or your balance can be frozen.
+
+It refuses getTokenLargestAccounts with 429, and so does every other free
+endpoint tried: ankr and publicnode answer 403, drpc answers 400. Holders are
+therefore gated behind a keyed RPC, and the code says so out loud rather than
+retrying into a wall.
 """
 
 import json
@@ -16,11 +22,15 @@ from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pipe.config import MAX_LOG_RANGE, rpc_url, user_agent
+from pipe.config import holders_available, rpc_url, user_agent
 
 
 class RpcError(RuntimeError):
     pass
+
+
+class RpcUnavailable(RpcError):
+    """The call needs an endpoint this deployment does not have."""
 
 
 class RpcClient:
@@ -50,11 +60,9 @@ class RpcClient:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
                 last = exc
-                # 403 here almost always means the User-Agent was stripped by
-                # something in the middle, not that we are rate limited.
                 if exc.code in (429, 502, 503, 504) and attempt < self.retries:
-                    # 429 needs real room, not a token pause: the node is
-                    # telling us the batch was too big or too frequent.
+                    # 429 on the public endpoint is a real ceiling, not a
+                    # hiccup, so the pause is long enough to be worth taking.
                     time.sleep((1.2 if exc.code == 429 else 0.4) * (attempt + 1))
                     continue
                 raise RpcError(f"rpc http {exc.code}") from exc
@@ -74,9 +82,9 @@ class RpcClient:
 
     def batch(self, calls: Iterable[tuple[str, list[Any]]]) -> list[Any]:
         """
-        One round trip for many calls. Results come back in request order, and
-        a failure inside the batch is returned as None rather than raised: a
-        single unreadable token must not take down a page of forty.
+        One round trip for many calls, results in request order. A failure
+        inside the batch comes back as None rather than raising: one
+        unreadable mint must not cost a page of forty.
         """
         items = list(calls)
         if not items:
@@ -97,47 +105,48 @@ class RpcClient:
 
     # ------------------------------------------------------------ helpers
 
-    def block_number(self) -> int:
-        return int(self.call("eth_blockNumber"), 16)
+    def slot(self) -> int:
+        return int(self.call("getSlot") or 0)
 
-    def block_timestamp(self, number: int) -> int:
-        block = self.call("eth_getBlockByNumber", [hex(number), False])
-        return int(block["timestamp"], 16) if block else 0
+    def healthy(self) -> bool:
+        try:
+            return self.call("getHealth") == "ok"
+        except RpcError:
+            return False
 
-    def get_code(self, address: str) -> str:
-        return self.call("eth_getCode", [address, "latest"]) or "0x"
+    def account_info(self, address: str) -> dict | None:
+        out = self.call("getAccountInfo", [address, {"encoding": "jsonParsed"}])
+        return (out or {}).get("value")
 
-    def eth_call(self, to: str, data: str, *, frm: str | None = None) -> str:
-        tx: dict[str, Any] = {"to": to, "data": data}
-        if frm:
-            tx["from"] = frm
-        return self.call("eth_call", [tx, "latest"])
+    def accounts_info(self, addresses: list[str]) -> dict[str, dict | None]:
+        """getMultipleAccounts takes up to 100 keys, so pages of 100."""
+        found: dict[str, dict | None] = {}
+        for start in range(0, len(addresses), 100):
+            chunk = addresses[start : start + 100]
+            try:
+                out = self.call("getMultipleAccounts", [chunk, {"encoding": "jsonParsed"}])
+            except RpcError:
+                for address in chunk:
+                    found[address] = None
+                continue
+            values = (out or {}).get("value") or []
+            for address, value in zip(chunk, values):
+                found[address] = value
+        return found
 
-    def get_logs(
-        self,
-        *,
-        address: str | list[str] | None,
-        topics: list[Any],
-        from_block: int,
-        to_block: int,
-    ) -> list[dict[str, Any]]:
+    def token_supply(self, mint: str) -> dict | None:
+        out = self.call("getTokenSupply", [mint])
+        return (out or {}).get("value")
+
+    def largest_token_accounts(self, mint: str) -> list[dict]:
         """
-        Walks the range in MAX_LOG_RANGE slices. At 0.1s per block a naive
-        "last 24 hours" is 864,000 blocks, so callers are expected to think
-        about the window; this only makes sure the node is never asked for
-        more than it will answer in one go.
+        The holder call, and the one the free endpoints will not serve. It is
+        refused loudly here so the caller can say "set a key" instead of
+        showing an empty chart that looks like a token with no holders.
         """
-        out: list[dict[str, Any]] = []
-        start = max(0, from_block)
-        while start <= to_block:
-            end = min(start + MAX_LOG_RANGE - 1, to_block)
-            params: dict[str, Any] = {
-                "fromBlock": hex(start),
-                "toBlock": hex(end),
-                "topics": topics,
-            }
-            if address:
-                params["address"] = address
-            out.extend(self.call("eth_getLogs", [params]) or [])
-            start = end + 1
-        return out
+        if not holders_available():
+            raise RpcUnavailable(
+                "Holder data needs a keyed RPC. Set HELIUS_API_KEY or SOLANA_RPC_URL."
+            )
+        out = self.call("getTokenLargestAccounts", [mint])
+        return (out or {}).get("value") or []

@@ -1,8 +1,9 @@
 /*
   Every route answers the same envelope: { ok, data, error }. Unwrapping it in
-  one place means no component has to remember to check `ok`, and a failure
-  arrives as a thrown Error with the server's own message rather than as
-  `undefined` three renders later.
+  one place means no component has to check `ok`, and a failure arrives as a
+  thrown Error carrying the server's own message — which matters here, because
+  one of those messages ("holders need a keyed RPC") is a real answer the user
+  is meant to read rather than a bug.
 */
 
 async function get(path, signal) {
@@ -18,18 +19,9 @@ async function get(path, signal) {
 }
 
 export const fetchHealth = (signal) => get("/api/health", signal);
-
-export function fetchFeed({ limit = 90, order = "new", minLiquidity = 0 } = {}, signal) {
-  const q = new URLSearchParams({
-    limit: String(limit),
-    order,
-    min_liquidity: String(minLiquidity),
-  });
-  return get(`/api/feed?${q}`, signal);
-}
-
-export const fetchToken = (address, signal) => get(`/api/token/${address}`, signal);
-export const fetchHolders = (address, signal) => get(`/api/token/${address}/holders`, signal);
+export const fetchFeed = ({ limit = 40 } = {}, signal) => get(`/api/feed?limit=${limit}`, signal);
+export const fetchToken = (mint, signal) => get(`/api/token/${mint}`, signal);
+export const fetchHolders = (mint, signal) => get(`/api/token/${mint}/holders`, signal);
 
 /* ------------------------------------------------------------ formatting */
 
@@ -38,7 +30,7 @@ export function usd(value) {
   if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}b`;
   if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}m`;
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}k`;
-  if (n > 0 && n < 1) return `$${n.toFixed(4)}`;
+  if (n > 0 && n < 1) return `$${n.toFixed(6)}`;
   return `$${n.toFixed(0)}`;
 }
 
@@ -49,18 +41,19 @@ export function age(minutes) {
   return `${Math.floor(m / 1440)}d`;
 }
 
-export const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—");
+/* Solana addresses are long. Both ends carry meaning, the middle does not. */
+export const short = (a) => (a ? `${a.slice(0, 4)}…${a.slice(-4)}` : "—");
 
 /*
-  A token's real logo lives in its metadata and reaches us through DexScreener.
-  For the first minutes of its life there isn't one, and a grey box in every
-  row makes the whole feed look broken — so an address-derived mark stands in.
-  Same address, same picture, every time.
+  A coin's real image comes from its metadata and reaches us through pump.fun
+  or DexScreener. For the first moments there isn't one, and a grey box in
+  every row makes the whole feed look broken — so a mint-derived mark stands
+  in. Same mint, same picture, every time.
 */
-export function fallbackAvatar(address = "") {
+export function fallbackAvatar(mint = "") {
   let h = 2166136261;
-  for (let i = 0; i < address.length; i++) {
-    h ^= address.charCodeAt(i);
+  for (let i = 0; i < mint.length; i++) {
+    h ^= mint.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   const hue = Math.abs(h) % 360;

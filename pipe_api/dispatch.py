@@ -3,28 +3,32 @@ from __future__ import annotations
 """
 Routes.
 
-Two modes, chosen by whether DATABASE_URL is set:
+The feed is assembled from three sources, each doing the one thing it is best
+at:
 
-  with a database  — reads the indexed feed, which has history and filters
-  without one      — reads a short window straight off the chain
+  pump.fun      that a coin exists at all, its creator, and how far along the
+                bonding curve it is — the only place `complete` comes from
+  the mint      whether the supply can grow and whether balances can be
+                frozen, read straight off the mint account without a key
+  DexScreener   price, liquidity, volume and a better image, once anything has
+                indexed a market
 
-The second mode is not a stub. It is what runs on a fresh deploy before the
-first cron fires, and it says so in the payload so the UI can tell the user
-the window is small rather than showing an empty feed and looking broken.
+Holders are deliberately absent from the feed. The call that reads them is the
+one no free endpoint will serve, so it happens on the token page and only when
+a keyed endpoint is configured.
 """
 
-import json
 import time
 from dataclasses import asdict
 from typing import Any
 
 from pipe import db
 from pipe.analysis import read as reader
-from pipe.chain.erc20 import metadata_many
+from pipe.chain import pumpfun
 from pipe.chain.holders import distribution
-from pipe.chain.pons import recent_launches
-from pipe.chain.rpc import RpcClient, RpcError
-from pipe.config import CHAIN_ID, ZERO_ADDRESS, blocks_for_minutes
+from pipe.chain.rpc import RpcClient, RpcError, RpcUnavailable
+from pipe.chain.spl import mint_info_many
+from pipe.config import DEXSCREENER_CHAIN, holders_available
 from pipe.market.dexscreener import markets_for
 
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -44,29 +48,34 @@ def envelope(ok: bool, data: Any = None, error: str = "") -> dict:
     return {"ok": ok, "data": data, "error": error or None}
 
 
-def _age_minutes(launch_block: int, head: int) -> int:
-    return max(0, int((head - launch_block) * 0.1 / 60))
-
-
-def _row_from_chain(launch, meta, market, head) -> dict:
-    token = launch.token
-    m = market.get(token)
-    info = meta.get(token)
+def _row(coin, mint_info, market) -> dict:
+    info = mint_info.get(coin.mint)
+    m = market.get(coin.mint)
     return {
-        "address": token,
-        "curve": launch.curve,
-        "deployer": launch.deployer,
-        "pair_token": launch.pair_token,
-        "native_pair": launch.native_pair,
-        "launch_block": launch.block,
-        "age_minutes": _age_minutes(launch.block, head),
-        "symbol": (info.symbol if info else "") or "?",
-        "name": (info.name if info else "") or "",
-        "decimals": info.decimals if info else 18,
-        "image_url": m.image_url if m else "",
+        "mint": coin.mint,
+        "symbol": coin.symbol or "?",
+        "name": coin.name or "",
+        "creator": coin.creator,
+        "created_ms": coin.created_ms,
+        "age_minutes": coin.age_minutes,
+        "complete": coin.complete,
+        "progress": round(coin.progress, 4),
+        "stage": coin.stage,
+        "bonding_curve": coin.bonding_curve,
+        "pool_address": coin.pool_address,
+        "reply_count": coin.reply_count,
+        "decimals": info.decimals if info else coin.decimals,
+        # authorities — the two facts that decide whether a mint can be used
+        # against whoever holds it
+        "mint_readable": bool(info.readable) if info else False,
+        "can_inflate": bool(info.can_inflate) if info else False,
+        "can_freeze": bool(info.can_freeze) if info else False,
+        # market, when anything has indexed one
+        "indexed": bool(m),
+        "image_url": (m.image_url if m and m.image_url else coin.image_uri) or "",
         "price_usd": m.price_usd if m else 0.0,
         "liquidity_usd": m.liquidity_usd if m else 0.0,
-        "fdv": (m.fdv or m.market_cap) if m else 0.0,
+        "fdv": (m.fdv or m.market_cap) if m else coin.market_cap_usd,
         "volume_h1": m.volume_h1 if m else 0.0,
         "volume_h24": m.volume_h24 if m else 0.0,
         "buys_h1": m.buys_h1 if m else 0,
@@ -74,143 +83,130 @@ def _row_from_chain(launch, meta, market, head) -> dict:
         "change_m5": m.change_m5 if m else 0.0,
         "change_h1": m.change_h1 if m else 0.0,
         "change_h24": m.change_h24 if m else 0.0,
-        "quote_symbol": (m.quote_symbol if m else "") or "ETH",
-        "indexed": bool(m),
+        "quote_symbol": (m.quote_symbol if m else "") or "SOL",
     }
 
 
-def feed_route(query: dict) -> dict:
-    limit = min(int(query.get("limit", ["60"])[0] or 60), 120)
-    order = (query.get("order", ["new"])[0] or "new").lower()
-    min_liq = float(query.get("min_liquidity", ["0"])[0] or 0)
+def _enrich(coins: list) -> list[dict]:
+    if not coins:
+        return []
+    mints = [coin.mint for coin in coins]
+    try:
+        info = mint_info_many(RpcClient(), mints)
+    except RpcError:
+        # The public endpoint rate limits. Losing the authority checks is
+        # worth saying, not worth dropping the whole page for.
+        info = {}
+    market = markets_for(mints)
+    rows = [_row(coin, info, market) for coin in coins]
+    for row in rows:
+        row["risk"] = reader.risk_only(row)
+    return rows
 
-    if db.configured():
-        rows = db.feed(limit=limit, order=order, min_liquidity=min_liq)
-        client = RpcClient()
-        head = cached("head", 2.0, client.block_number)
-        for row in rows:
-            row["age_minutes"] = _age_minutes(int(row["launch_block"]), head)
-            row["native_pair"] = row.get("pair_token", "") in ("", ZERO_ADDRESS)
-            row["indexed"] = row.get("liquidity_usd", 0) > 0
-            row["total_supply"] = str(row.get("total_supply", 0))
-            row["first_seen"] = str(row.get("first_seen", ""))
-            row["risk"] = reader.risk_only(row)
-        return envelope(True, {"source": "index", "head": head, "chain_id": CHAIN_ID, "rows": rows})
+
+def feed_route(query: dict) -> dict:
+    limit = min(int(query.get("limit", ["40"])[0] or 40), 80)
 
     def build():
-        client = RpcClient()
-        head = client.block_number()
-        # The no-database path reads the chain on every request, so it asks for
-        # less than the indexed path does. Thirty tokens is under three metadata
-        # batches; ninety was enough to earn a 429 and an empty feed.
-        launches = recent_launches(client, blocks=blocks_for_minutes(12))[: min(limit, 30)]
-        addresses = [item.token for item in launches]
-        meta = metadata_many(client, addresses) if addresses else {}
-        market = markets_for(addresses) if addresses else {}
-        rows = [_row_from_chain(item, meta, market, head) for item in launches]
-        for row in rows:
-            row["risk"] = reader.risk_only(row)
-        if min_liq:
-            rows = [r for r in rows if r["liquidity_usd"] >= min_liq]
+        fresh = pumpfun.newest(limit)
+        stretch = pumpfun.about_to_graduate(min(limit, 30))
+        done = pumpfun.migrated(min(limit, 30))
+
+        seen: dict[str, Any] = {}
+        for group in (fresh, stretch, done):
+            for coin in group:
+                seen.setdefault(coin.mint, coin)
+
+        rows = {row["mint"]: row for row in _enrich(list(seen.values()))}
         return {
-            "source": "chain",
-            "window_minutes": 12,
-            "head": head,
-            "chain_id": CHAIN_ID,
-            "rows": rows,
-            "note": "No DATABASE_URL set, so this is a live twelve-minute window rather than the indexed feed.",
+            "chain": "solana",
+            "source": "live",
+            "holders_available": holders_available(),
+            "columns": {
+                "new": [rows[c.mint] for c in fresh if c.mint in rows],
+                "stretch": [rows[c.mint] for c in stretch if c.mint in rows],
+                "migrated": [rows[c.mint] for c in done if c.mint in rows],
+            },
         }
 
-    return envelope(True, cached(f"feed:{limit}:{min_liq}", 6.0, build))
+    return envelope(True, cached(f"feed:{limit}", 8.0, build))
 
 
-def token_route(address: str) -> dict:
-    address = address.lower()
-    if db.configured():
-        row = db.token(address)
-        if row:
-            client = RpcClient()
-            head = cached("head", 2.0, client.block_number)
-            row["age_minutes"] = _age_minutes(int(row["launch_block"]), head)
-            row["total_supply"] = str(row.get("total_supply", 0))
-            row["first_seen"] = str(row.get("first_seen", ""))
-            snapshot = db.holders(address)
-            if snapshot:
-                snapshot["clusters"] = snapshot.get("clusters") or []
-                snapshot["holders"] = snapshot.get("holders") or []
-                snapshot["taken_at"] = str(snapshot.get("taken_at", ""))
-            row["risk"] = reader.risk_only(row)
-            return envelope(True, {"token": row, "holders": snapshot, "read": reader.build(row, snapshot)})
-
+def token_route(mint: str) -> dict:
     def build():
-        client = RpcClient()
-        head = client.block_number()
-        launches = recent_launches(client, blocks=blocks_for_minutes(90))
-        found = next((item for item in launches if item.token == address), None)
-        if not found:
+        coin = pumpfun.one(mint)
+        if not coin:
             return None
-        meta = metadata_many(client, [address])
-        market = markets_for([address])
-        row = _row_from_chain(found, meta, market, head)
-        row["risk"] = reader.risk_only(row)
+        rows = _enrich([coin])
+        if not rows:
+            return None
+        row = rows[0]
         return {"token": row, "holders": None, "read": reader.build(row, None)}
 
-    data = cached(f"token:{address}", 8.0, build)
+    data = cached(f"token:{mint}", 10.0, build)
     if not data:
-        return envelope(False, error="Token not found in the recent window.")
+        return envelope(False, error="Coin not found on pump.fun.")
     return envelope(True, data)
 
 
-def holders_route(address: str) -> dict:
-    address = address.lower()
+def holders_route(mint: str) -> dict:
+    if not holders_available():
+        return envelope(
+            False,
+            error=(
+                "Holder data needs a keyed RPC. No free Solana endpoint serves "
+                "getTokenLargestAccounts — mainnet-beta answers 429, ankr and publicnode 403. "
+                "Set HELIUS_API_KEY or SOLANA_RPC_URL and this fills in."
+            ),
+        )
 
     def build():
-        client = RpcClient()
-        head = client.block_number()
-        if db.configured():
-            row = db.token(address)
-            if not row:
-                return None
-            curve, deployer, start = row["curve"], row["deployer"], int(row["launch_block"])
-        else:
-            launches = recent_launches(client, blocks=blocks_for_minutes(90))
-            found = next((item for item in launches if item.token == address), None)
-            if not found:
-                return None
-            curve, deployer, start = found.curve, found.deployer, found.block
+        coin = pumpfun.one(mint)
+        if not coin:
+            return None
         dist = distribution(
-            client, token=address, curve=curve, deployer=deployer,
-            from_block=start, to_block=head, limit=60,
+            RpcClient(),
+            mint=mint,
+            creator=coin.creator,
+            curve=coin.bonding_curve,
+            pool=coin.pool_address,
         )
         return {
-            "token": address,
+            "mint": mint,
             "counted": dist.counted,
             "top10_share": dist.top10_share,
-            "deployer_share": dist.deployer_share,
-            "clusters": dist.clusters,
+            "creator_share": dist.creator_share,
+            "curve_share": dist.curve_share,
+            "truncated": dist.truncated,
+            "note": dist.note,
             "holders": [asdict(h) for h in dist.holders],
-            "logs_read": dist.logs_read,
-            "taken_block": head,
         }
 
-    data = cached(f"holders:{address}", 20.0, build)
+    try:
+        data = cached(f"holders:{mint}", 25.0, build)
+    except RpcUnavailable as exc:
+        return envelope(False, error=str(exc))
+    except RpcError as exc:
+        return envelope(False, error=f"The RPC refused the holder call: {exc}")
     if not data:
-        return envelope(False, error="Token not found.")
+        return envelope(False, error="Coin not found.")
     return envelope(True, data)
 
 
 def health_route() -> dict:
-    out: dict[str, Any] = {"chain_id": CHAIN_ID, "database": "configured" if db.configured() else "absent"}
+    out: dict[str, Any] = {
+        "chain": "solana",
+        "dexscreener": DEXSCREENER_CHAIN,
+        "holders": "available" if holders_available() else "needs a keyed rpc",
+        "database": "configured" if db.configured() else "absent",
+    }
+    client = RpcClient()
     try:
-        out["head"] = RpcClient().block_number()
+        out["slot"] = client.slot()
         out["rpc"] = "ok"
     except RpcError as exc:
         out["rpc"] = f"unreachable: {exc}"
-    if db.configured():
-        try:
-            out["index"] = db.stats()
-        except Exception as exc:  # pragma: no cover
-            out["index"] = f"error: {exc}"
+    out["launches"] = "ok" if pumpfun.newest(1) else "unreachable"
     return envelope(True, out)
 
 
@@ -222,7 +218,8 @@ def handle_get(path: str, query: dict) -> tuple[int, dict] | None:
     if path.startswith("/api/token/"):
         rest = path[len("/api/token/"):].strip("/")
         if rest.endswith("/holders"):
-            return 200, holders_route(rest[: -len("/holders")])
+            payload = holders_route(rest[: -len("/holders")])
+            return (200 if payload["ok"] else 409), payload
         if rest:
             payload = token_route(rest)
             return (200 if payload["ok"] else 404), payload
@@ -234,6 +231,7 @@ def handle_post(path: str, secret_ok: bool) -> tuple[int, dict] | None:
         if not secret_ok:
             return 401, envelope(False, error="Missing or wrong CRON_SECRET.")
         from pipe.indexer import run_all
+
         try:
             return 200, envelope(True, run_all())
         except Exception as exc:

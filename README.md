@@ -1,118 +1,133 @@
-# Pipe Terminal
+# Pipe Terminal — Solana
 
-A trading terminal for Robinhood Chain: the launch feed, token detail, holder
-distribution and the bubble map, plus a written read on every token instead of
-a score out of a hundred.
-
-Separate project, separate repository, separate Vercel deployment.
+A trading terminal for Solana: the launch feed straight off pump.fun, the two
+mint authorities that decide whether a coin can be turned against you, holder
+distribution and the bubble map, and a written read on every coin instead of a
+score out of a hundred.
 
 ## Where the data comes from
 
-Three sources, all verified against the live chain rather than assumed.
+Three sources, each verified against live responses rather than assumed, and
+each doing the one thing it is best at.
 
-**The chain — `https://rpc.mainnet.chain.robinhood.com`** is the source of
-truth for what exists. Every tradable token here is launched through the Pons
-factory at `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`, and every launch emits
-one `TokenLaunched` log. That log is the entire discovery feed.
+**pump.fun — `frontend-api-v3.pump.fun`** is the source of truth for existence.
+It gives the creator, the bonding curve account, the reserves and `complete`,
+which is the only authoritative answer to whether a coin has migrated.
 
-> The RPC answers **403 with an empty body** to any request without a
-> `User-Agent`, which looks exactly like the node being down. Every request in
-> `pipe/chain/rpc.py` sets one. Do not remove it.
+> The older `frontend-api` host answers **530**. Only `frontend-api-v3` works,
+> and only with a browser-shaped `User-Agent`. A library default gets nothing.
 
-**DexScreener — chain id `robinhood`** is the source for price, liquidity,
-volume, buy/sell counts and, through `info.imageUrl`, the token avatars. No key,
-no auth.
+> `complete=false` is a supported query parameter and it matters: sorting by
+> market cap without it returns a page that is almost entirely coins which
+> already migrated, and filtering afterwards leaves an empty column.
 
-> DexScreener has not heard of a token for its first minutes. A fresh row comes
-> back with `indexed: false` and zero liquidity. That is correct and expected —
-> the chain already told us the token exists, and the feed shows it immediately
-> rather than waiting for an indexer somewhere else to catch up.
+**The mint account** gives the two facts that matter most, and the public RPC
+serves them without a key:
 
-**Holders are computed here, not fetched.** The chain's Blockscout explorer sits
-behind bot protection and answers 403 to anything that is not a browser, so its
-holder endpoint is unusable from a server. It turns out not to matter: tokens
-here are minutes to hours old, so replaying their whole `Transfer` history is a
-handful of logs. A twenty-minute-old token took 25 logs and 1.8 seconds.
+| | |
+|---|---|
+| `mintAuthority` | if set, more supply can be created at any moment |
+| `freezeAuthority` | if set, a balance can be frozen in the wallet holding it |
 
-Two exclusions in that calculation are deliberate. The **curve** holds every
-token nobody has bought yet, so counting it makes every new launch look like a
-96% rug. The zero and dead addresses are burns, not people.
+**DexScreener — chain id `solana`** supplies price, liquidity, volume, buy and
+sell counts, and a second source for the image. No key, no auth. It knows
+nothing about a coin still on the curve, which is normal rather than an error.
 
-## Why there has to be a database
+## The one thing that needs a key
 
-Blocks land every **0.1 seconds** and roughly **sixty tokens launch every seven
-minutes** — about thirteen thousand a day. "The last hour of launches" is 36,000
-blocks of logs on every page load. The indexer walks the chain once, keeps a
-cursor, and writes to Postgres; the API reads Postgres and never scans.
+`getTokenLargestAccounts` is the holder call, and **no free Solana endpoint
+will serve it**. Measured, not assumed:
 
-With `DATABASE_URL` unset everything still runs, reading a live twelve-minute
-window straight off the chain. The response says `source: "chain"` and carries a
-note about the window, so the UI can tell the user it is small rather than
-showing a short feed and looking broken.
+| endpoint | answer |
+|---|---|
+| api.mainnet-beta.solana.com | 429 |
+| rpc.ankr.com/solana | 403 |
+| solana-rpc.publicnode.com | 403 |
+| solana.drpc.org | 400 |
+
+So holders and the bubble map are gated behind `HELIUS_API_KEY` or
+`SOLANA_RPC_URL`. Without one the terminal says so on the token page instead of
+drawing an empty chart that reads as "nobody holds this". Everything else —
+the feed, the curve, both authorities, price — works with no key at all.
+
+## What the bubble map does and does not claim
+
+Circles are wallets, area is share, and several token accounts owned by one
+wallet collapse into one circle. **No lines are drawn between wallets.** On an
+EVM chain the transfer log gives funding relationships for free; on Solana that
+needs signature history per wallet, which is a different order of cost, and a
+line we have not verified would say more than we know. The creator's wallet is
+the one relationship the data does give, and it is marked in copper.
+
+## The read
+
+Every other scanner prints a number out of a hundred. That hides the thing that
+matters: a coin with four verified facts and three unverifiable ones is not the
+same object as one with seven verified facts, and both come out as 72.
+
+So the read returns what was **checked**, what **failed**, and what **could not
+be checked at all** — named rather than folded into a guess. The paragraph is
+assembled from the same three lists, so it can never disagree with them.
 
 ## Layout
 
 ```
-api/index.py          Vercel entry: API, and web/dist for everything else
-pipe/config.py        endpoints, chain id, block time, all env-overridable
-pipe/chain/rpc.py     JSON-RPC with the required User-Agent, batching, retries
-pipe/chain/pons.py    TokenLaunched decoding — the discovery feed
-pipe/chain/erc20.py   name/symbol/decimals/supply, four calls per token, one batch
-pipe/chain/holders.py distribution and clusters from Transfer logs
-pipe/market/dexscreener.py  price, liquidity, volume, avatars
-pipe/db.py            Postgres schema, upserts, feed queries
-pipe/indexer.py       cursor-driven: launches, then metadata, then market
-pipe_api/dispatch.py  routes
-web/                  the terminal itself (Vite + React)
+api/index.py              Vercel entry: API, and web/dist for everything else
+pipe/config.py            endpoints, curve threshold, all env-overridable
+pipe/chain/rpc.py         Solana JSON-RPC; refuses the holder call loudly
+pipe/chain/pumpfun.py     the launch feed, curve progress, migration flag
+pipe/chain/spl.py         mint authorities and supply, one batch per page
+pipe/chain/holders.py     distribution from the twenty largest token accounts
+pipe/market/dexscreener.py price, liquidity, volume, images
+pipe/analysis/read.py     the read — three lists and a paragraph, no score
+pipe/db.py                Postgres: history, not the critical path
+pipe/indexer.py           writes what the feed showed so it stays findable
+pipe_api/dispatch.py      routes
+web/                      the terminal (Vite + React)
 ```
 
 ## Endpoints
 
 | | |
 |---|---|
-| `GET /api/health` | chain id, head block, whether a database is attached |
-| `GET /api/feed?limit=&order=&min_liquidity=` | the feed. `order` is `new`, `liquidity` or `volume` |
-| `GET /api/token/{address}` | one token, plus its last holder snapshot |
-| `GET /api/token/{address}/holders` | distribution and clusters for the bubble map |
+| `GET /api/health` | slot, whether holders are available, whether a database is attached |
+| `GET /api/feed?limit=` | three columns: new, final stretch, migrated |
+| `GET /api/token/{mint}` | one coin, its authorities and its read |
+| `GET /api/token/{mint}/holders` | distribution for the bubble map — 409 without a key |
 | `POST /api/index` | runs the indexer. Requires `Authorization: Bearer $CRON_SECRET` |
 
 ## Running it
 
 ```bash
 pip install -r requirements.txt
-npm --prefix web install
+npm --prefix web install && npm --prefix web run build
+python dev.py 8000
 ```
 
-Local, without a database — the twelve-minute window:
-
-```bash
-python -c "from pipe_api.dispatch import handle_get; print(handle_get('/api/feed',{})[1])"
-```
-
-With one, create the tables and fill them:
-
-```bash
-export DATABASE_URL="postgres://…"
-python -c "from pipe.indexer import run_all; print(run_all())"
-```
+That serves the API and the built frontend on one port, exactly as Vercel does.
 
 ## Environment
 
 | | |
 |---|---|
-| `DATABASE_URL` | Vercel Postgres or Neon. Absent means the chain-window mode |
+| `HELIUS_API_KEY` | unlocks holders and the bubble map |
+| `SOLANA_RPC_URL` | a full RPC URL, if you would rather not use Helius |
+| `DATABASE_URL` | Vercel Postgres or Neon. Absent means live-only, no history |
 | `CRON_SECRET` | required before `/api/index` will do anything |
-| `ROBINHOOD_RPC_URL` | overrides the default RPC |
-| `PONS_FACTORY` | overrides the factory address |
-| `PIPE_USER_AGENT` | what the RPC sees. Must not be empty |
+| `PUMPFUN_BASE` | overrides the launch feed host |
+| `PIPE_USER_AGENT` | what the feed sees. Must look like a browser |
 
 ## Two things to know before deploying
 
 **The cron in `vercel.json` runs every minute.** Minute-level schedules need a
-Pro plan; on Hobby, Vercel silently reduces it to daily, which is useless for a
-feed. Either upgrade or run the indexer from somewhere else and keep the route
-as the endpoint it calls.
+Pro plan; on Hobby, Vercel quietly reduces it to daily. The terminal still
+works — the feed is live either way — but nothing accumulates.
 
-**One indexer run is bounded to 60,000 blocks** so it always finishes inside the
-function's time budget. After an outage it catches up over several runs instead
-of timing out forever on the first one.
+**Trading is not wired.** The order panel is present and disabled, and says so.
+There is no wallet adapter, no signing and no approvals: nothing can leave an
+account from this screen.
+
+---
+
+The Robinhood Chain version of this terminal is in the history at commit
+`befacc6`, including its Pons log reader and the EVM holder replay.

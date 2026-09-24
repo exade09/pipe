@@ -20,8 +20,8 @@ const MARK = (
 );
 
 const FILTERS = [
-  ["indexed", "Priced"],
-  ["equity", "Equity pair"],
+  ["safe", "Both authorities revoked"],
+  ["indexed", "Has a pool"],
   ["clean", "No flags"],
 ];
 
@@ -29,65 +29,59 @@ export default function App() {
   const [feed, setFeed] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState("");
-  const [address, setAddress] = useState(null);
+  const [mint, setMint] = useState(null);
   const [query, setQuery] = useState("");
-  const [filters, setFilters] = useState({ indexed: false, equity: false, clean: false });
-  const [minLiq, setMinLiq] = useState(0);
+  const [filters, setFilters] = useState({ safe: false, indexed: false, clean: false });
   const seen = useRef(new Set());
   const [freshest, setFreshest] = useState(null);
   const searchRef = useRef(null);
 
   const load = useCallback(async (signal) => {
     try {
-      const data = await fetchFeed({ limit: 90, minLiquidity: minLiq }, signal);
+      const data = await fetchFeed({ limit: 40 }, signal);
       setFeed(data);
       setError("");
-      // Flash only what we have genuinely not shown before, so a refresh does
-      // not light up the whole column.
-      const next = data.rows.find((r) => !seen.current.has(r.address));
-      data.rows.forEach((r) => seen.current.add(r.address));
+      const next = (data.columns.new || []).find((r) => !seen.current.has(r.mint));
+      Object.values(data.columns).flat().forEach((r) => seen.current.add(r.mint));
       if (next) {
-        setFreshest(next.address);
+        setFreshest(next.mint);
         setTimeout(() => setFreshest(null), 1600);
       }
     } catch (e) {
       if (e.name !== "AbortError") setError(e.message);
     }
-  }, [minLiq]);
+  }, []);
 
   useEffect(() => {
     const ctrl = new AbortController();
     load(ctrl.signal);
     fetchHealth(ctrl.signal).then(setHealth).catch(() => {});
-    const timer = setInterval(() => load(), 5000);
+    const timer = setInterval(() => load(), 6000);
     return () => { ctrl.abort(); clearInterval(timer); };
   }, [load]);
 
   useEffect(() => {
     function onKey(e) {
-      if (e.target === searchRef.current) {
-        if (e.key === "Escape") searchRef.current.blur();
-        return;
-      }
+      if (e.target === searchRef.current) { if (e.key === "Escape") searchRef.current.blur(); return; }
       if (e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
-      else if (e.key === "Escape" && address) setAddress(null);
+      else if (e.key === "Escape" && mint) setMint(null);
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [address]);
+  }, [mint]);
 
-  const rows = (feed?.rows || []).filter((r) => {
-    if (filters.indexed && !r.indexed) return false;
-    if (filters.equity && r.native_pair) return false;
-    if (filters.clean && r.risk === "risk") return false;
+  const filter = (row) => {
+    if (filters.safe && (row.can_inflate || row.can_freeze || !row.mint_readable)) return false;
+    if (filters.indexed && !row.indexed) return false;
+    if (filters.clean && row.risk === "risk") return false;
     if (query) {
-      const hay = `${r.symbol} ${r.name} ${r.address}`.toLowerCase();
+      const hay = `${row.symbol} ${row.name} ${row.mint}`.toLowerCase();
       if (!hay.includes(query.toLowerCase())) return false;
     }
     return true;
-  });
+  };
 
-  const onChain = feed?.source === "chain";
+  const total = feed ? Object.values(feed.columns).flat().length : 0;
 
   return (
     <div className="shell">
@@ -95,58 +89,42 @@ export default function App() {
         <span className="brand">{MARK}<b>PIPE</b></span>
         <span className="grow" />
         <input
-          ref={searchRef}
-          className="srch"
-          placeholder="ticker, name or contract   /"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search"
+          ref={searchRef} className="srch" placeholder="ticker, name or mint   /"
+          value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search"
         />
-        <span className="chip"><i />block {feed?.head ?? health?.head ?? "…"}</span>
-        {onChain ? (
-          <span className="chip warn" title={feed?.note}><i />live window · no index</span>
-        ) : (
-          <span className="chip"><i />indexed</span>
+        <span className="chip"><i />solana</span>
+        <span className="chip"><i />slot {health?.slot ?? "…"}</span>
+        {feed && !feed.holders_available && (
+          <span className="chip warn" title="getTokenLargestAccounts needs a keyed RPC"><i />no holder key</span>
         )}
       </div>
 
       <div className="sub">
         <span className="lbl">Filters</span>
         {FILTERS.map(([key, name]) => (
-          <button
-            key={key}
-            className="f"
-            aria-pressed={filters[key]}
-            onClick={() => setFilters((f) => ({ ...f, [key]: !f[key] }))}
-          >
+          <button key={key} className="f" aria-pressed={filters[key]}
+            onClick={() => setFilters((f) => ({ ...f, [key]: !f[key] }))}>
             {name}
           </button>
         ))}
         <span className="sep" />
-        <span className="lbl">Min LP</span>
-        {[0, 1000, 10000].map((v) => (
-          <button key={v} className="f" aria-pressed={minLiq === v} onClick={() => setMinLiq(v)}>
-            {v === 0 ? "any" : `$${v / 1000}k`}
-          </button>
-        ))}
-        <span className="sep" />
-        <span className="lbl">{rows.length} of {feed?.rows?.length ?? 0} shown</span>
+        <span className="lbl">{total} coins across three columns</span>
       </div>
 
       <div className="body">
         {error && <div className="err">{error}</div>}
-        {!feed && !error && <div className="loading">reading the chain</div>}
-        {feed && !address && <Pulse rows={rows} freshest={freshest} onOpen={setAddress} />}
-        {feed && address && <TokenPage address={address} onBack={() => setAddress(null)} />}
+        {!feed && !error && <div className="loading">reading pump.fun and the mint accounts</div>}
+        {feed && !mint && <Pulse columns={feed.columns} freshest={freshest} onOpen={setMint} filter={filter} />}
+        {feed && mint && <TokenPage mint={mint} onBack={() => setMint(null)} />}
       </div>
 
       <div className="strip">
-        <span>chain {feed?.chain_id ?? health?.chain_id ?? "—"}</span>
+        <span>launches {health?.launches ?? "…"}</span>
         <span>rpc {health?.rpc ?? "…"}</span>
+        <span>holders {health?.holders ?? "…"}</span>
         <span>db {health?.database ?? "…"}</span>
-        {onChain && <span className="hi">{feed.note}</span>}
         <span style={{ marginLeft: "auto" }}>
-          holders replayed from Transfer logs · avatars from token metadata
+          curve state from pump.fun · authorities from the mint · price from dexscreener
         </span>
       </div>
     </div>

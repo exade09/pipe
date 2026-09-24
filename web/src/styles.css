@@ -140,6 +140,12 @@ a { color: var(--type); text-decoration: none; }
 .row .l2 { display: flex; gap: 10px; margin-top: 4px; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
 .row .l2 b { color: var(--type); font-weight: 400; }
 
+/* curve progress. only a migrated coin fills it — see Pulse.jsx */
+.row .l3 { display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.bar { height: 3px; background: var(--line); flex: 1; position: relative; overflow: hidden; }
+.bar i { position: absolute; inset: 0 auto 0 0; background: var(--copper); display: block; }
+.tiny { font-size: 10px; }
+
 .av { border: 1px solid var(--line); display: block; flex: none; background: #000; object-fit: cover; }
 
 .flag {

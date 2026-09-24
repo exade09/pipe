@@ -1,158 +1,143 @@
 from __future__ import annotations
 
 """
-Holder distribution and the bubble map, computed from Transfer logs.
+Holder distribution and the bubble map.
 
-The explorer for this chain sits behind bot protection and answers 403 to
-anything that is not a browser, so its holder endpoint is unavailable to a
-server. That turns out not to matter: tokens here are minutes to hours old,
-and replaying their whole Transfer history is a handful of logs. A token
-twenty minutes into its life took four logs and under half a second.
+On an EVM chain this was computed by replaying Transfer logs, which also gave
+the funding relationships between wallets for free. Solana does not work that
+way: balances live in token accounts, and getTokenLargestAccounts returns the
+twenty largest of them in one call.
 
-Two exclusions matter and are deliberate:
-  · the curve holds every token that has not been bought yet, and counting it
-    as a holder makes every new launch look like a 96% rug
-  · the zero and dead addresses are burns, not people
+That call is the thing no free endpoint will serve — mainnet-beta answers 429,
+ankr and publicnode 403, drpc 400 — so this module raises RpcUnavailable
+rather than returning an empty map that would read as "nobody holds this".
+
+What this does and does not know, stated plainly because the map has to be
+honest about it:
+
+  · it reads the twenty largest token accounts, not every holder
+  · it resolves each one to the wallet that owns it, so several accounts
+    belonging to one person collapse into one circle
+  · it marks the coin's creator, which is the single relationship that
+    matters most and the one pump.fun hands over directly
+  · it does NOT trace who funded whom. That needs signature history per
+    wallet, which is a different order of cost, and inventing a cluster
+    without it would be worse than showing none
 """
 
 from dataclasses import dataclass, field
 
-from pipe.chain.erc20 import TRANSFER_TOPIC
-from pipe.chain.rpc import RpcClient
-from pipe.config import DEAD_ADDRESS, ZERO_ADDRESS
+from pipe.chain.rpc import RpcClient, RpcError
+
+# Accounts that hold supply but are not people. The curve holds everything
+# nobody has bought yet; counting it makes every new coin look like one wallet
+# owns 96% of it.
+def _programmatic(owner: str, curve: str, pool: str) -> bool:
+    return owner in {curve, pool} and bool(owner)
 
 
 @dataclass
 class Holder:
-    address: str
-    balance: int
+    account: str
+    owner: str
+    amount: int
     share: float = 0.0
-    first_block: int = 0
-    # The address this wallet received its first tokens from, ignoring the
-    # curve. Wallets sharing one of these are grouped, because a distribution
-    # to many wallets from one source is the shape worth seeing.
-    source: str = ""
-    cluster: int = -1
-    is_deployer: bool = False
+    is_creator: bool = False
+    is_curve: bool = False
+    accounts: int = 1
 
 
 @dataclass
 class Distribution:
-    token: str
+    mint: str
     holders: list[Holder] = field(default_factory=list)
     counted: int = 0
     circulating: int = 0
     top10_share: float = 0.0
-    deployer_share: float = 0.0
-    clusters: list[dict] = field(default_factory=list)
-    logs_read: int = 0
-    complete: bool = True
+    creator_share: float = 0.0
+    curve_share: float = 0.0
+    truncated: bool = True
+    note: str = ""
 
 
 def distribution(
     client: RpcClient,
     *,
-    token: str,
-    curve: str,
-    deployer: str,
-    from_block: int,
-    to_block: int | None = None,
-    limit: int = 60,
+    mint: str,
+    creator: str = "",
+    curve: str = "",
+    pool: str = "",
 ) -> Distribution:
-    token = token.lower()
-    curve = (curve or "").lower()
-    deployer = (deployer or "").lower()
-    head = to_block if to_block is not None else client.block_number()
+    creator = (creator or "").strip()
+    curve = (curve or "").strip()
+    pool = (pool or "").strip()
 
-    logs = client.get_logs(
-        address=token,
-        topics=[TRANSFER_TOPIC],
-        from_block=from_block,
-        to_block=head,
-    )
+    largest = client.largest_token_accounts(mint)
+    if not largest:
+        return Distribution(mint=mint, note="No token accounts returned for this mint.")
 
-    balances: dict[str, int] = {}
-    first_seen: dict[str, int] = {}
-    source: dict[str, str] = {}
-
-    for log in logs:
-        topics = log.get("topics") or []
-        if len(topics) < 3:
+    accounts = [row.get("address") for row in largest if row.get("address")]
+    amounts: dict[str, int] = {}
+    for row in largest:
+        address = row.get("address")
+        if not address:
             continue
-        sender = "0x" + str(topics[1])[-40:].lower()
-        receiver = "0x" + str(topics[2])[-40:].lower()
         try:
-            value = int(log.get("data") or "0x0", 16)
-        except ValueError:
+            amounts[address] = int(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amounts[address] = 0
+
+    # Resolve each token account to its owning wallet, so one person holding
+    # through three accounts is one circle rather than three.
+    owners: dict[str, str] = {}
+    try:
+        info = client.accounts_info(accounts)
+        for address, value in info.items():
+            parsed = ((value or {}).get("data") or {}).get("parsed") or {}
+            owners[address] = ((parsed.get("info") or {}).get("owner")) or ""
+    except RpcError:
+        owners = {address: "" for address in accounts}
+
+    by_owner: dict[str, Holder] = {}
+    curve_total = 0
+    for address in accounts:
+        owner = owners.get(address) or address
+        amount = amounts.get(address, 0)
+        if amount <= 0:
             continue
-        block = int(log["blockNumber"], 16)
-
-        balances[sender] = balances.get(sender, 0) - value
-        balances[receiver] = balances.get(receiver, 0) + value
-        if receiver not in first_seen:
-            first_seen[receiver] = block
-            # Where the tokens actually came from. Buying on the curve is the
-            # normal path and says nothing, so it is not recorded as a source.
-            if sender not in (curve, ZERO_ADDRESS):
-                source[receiver] = sender
-
-    ignored = {curve, ZERO_ADDRESS, DEAD_ADDRESS, ""}
-    people = {
-        address: amount
-        for address, amount in balances.items()
-        if amount > 0 and address not in ignored
-    }
-    circulating = sum(people.values()) or 1
-
-    ranked = sorted(people.items(), key=lambda item: -item[1])
-    holders = [
-        Holder(
-            address=address,
-            balance=amount,
-            share=round(amount / circulating * 100, 4),
-            first_block=first_seen.get(address, from_block),
-            source=source.get(address, ""),
-            is_deployer=(address == deployer),
-        )
-        for address, amount in ranked[:limit]
-    ]
-
-    # Group by shared source. A group of one is not a cluster, it is a wallet
-    # that happened to be sent tokens once.
-    by_source: dict[str, list[Holder]] = {}
-    for holder in holders:
-        if holder.source:
-            by_source.setdefault(holder.source, []).append(holder)
-
-    clusters: list[dict] = []
-    for src, members in sorted(by_source.items(), key=lambda kv: -sum(h.share for h in kv[1])):
-        if len(members) < 2:
+        if _programmatic(owner, curve, pool) or address in {curve, pool}:
+            curve_total += amount
             continue
-        index = len(clusters)
-        for holder in members:
-            holder.cluster = index
-        clusters.append(
-            {
-                "index": index,
-                "source": src,
-                "wallets": len(members),
-                "share": round(sum(holder.share for holder in members), 3),
-            }
-        )
+        existing = by_owner.get(owner)
+        if existing:
+            existing.amount += amount
+            existing.accounts += 1
+        else:
+            by_owner[owner] = Holder(
+                account=address,
+                owner=owner,
+                amount=amount,
+                is_creator=bool(creator) and owner == creator,
+            )
 
-    top10 = round(sum(holder.share for holder in holders[:10]), 3)
-    deployer_share = round(
-        sum(holder.share for holder in holders if holder.is_deployer), 3
-    )
+    people = sorted(by_owner.values(), key=lambda h: -h.amount)
+    circulating = sum(h.amount for h in people) or 1
+    for holder in people:
+        holder.share = round(holder.amount / circulating * 100, 4)
 
+    total_with_curve = circulating + curve_total or 1
     return Distribution(
-        token=token,
-        holders=holders,
+        mint=mint,
+        holders=people,
         counted=len(people),
         circulating=circulating,
-        top10_share=top10,
-        deployer_share=deployer_share,
-        clusters=clusters,
-        logs_read=len(logs),
-        complete=True,
+        top10_share=round(sum(h.share for h in people[:10]), 3),
+        creator_share=round(sum(h.share for h in people if h.is_creator), 3),
+        curve_share=round(curve_total / total_with_curve * 100, 3),
+        truncated=True,
+        note=(
+            "The twenty largest token accounts, resolved to the wallets that own them. "
+            "Shares are of the supply those wallets hold between them, with the bonding "
+            "curve excluded."
+        ),
     )

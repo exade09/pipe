@@ -3,15 +3,15 @@ from __future__ import annotations
 """
 Market data and token images.
 
-DexScreener indexes this chain under the id "robinhood" — confirmed against a
-live response, not guessed from the name. It gives price, liquidity, volume
-and buy/sell counts across four windows, and `info.imageUrl`, which is where
-the avatars in the feed come from. There is no key and no auth.
+DexScreener indexes Solana under the id "solana". It gives price, liquidity,
+volume and buy/sell counts across four windows, and `info.imageUrl`, which is
+one of the two places the avatars in the feed come from. No key, no auth.
 
-What it does not give is the first minutes of a token's life: a pair has to be
-indexed before it appears. That gap is exactly what the Pons log feed covers,
-which is why this terminal reads both and treats the chain as the source of
-truth for existence and DexScreener as the source for price.
+What it does not give is the first minutes of a coin's life: a pair has to be
+indexed before it appears, and a coin still on the bonding curve has no pair
+at all. That gap is exactly what pump.fun covers, which is why this terminal
+reads both and treats pump.fun as the source of truth for existence and
+DexScreener as the source for price.
 """
 
 import json
@@ -95,7 +95,7 @@ def _to_market(token: str, pair: dict) -> Market:
     txns = (pair.get("txns") or {}).get("h1") or {}
     info = pair.get("info") or {}
     return Market(
-        token=token.lower(),
+        token=token,
         pair_address=pair.get("pairAddress", ""),
         dex=pair.get("dexId", ""),
         price_usd=_num(pair.get("priceUsd")),
@@ -123,12 +123,16 @@ def _to_market(token: str, pair: dict) -> Market:
 
 def markets_for(addresses: list[str]) -> dict[str, Market]:
     """
-    Market rows keyed by lowercase token address. Tokens DexScreener has not
-    indexed yet are simply absent — that is a normal state for anything under
-    a few minutes old, not an error.
+    Market rows keyed by mint, exactly as given. Coins DexScreener has not
+    indexed yet are simply absent — the normal state for anything still on the
+    curve, not an error.
     """
+    # Solana addresses are base58 and case sensitive. The EVM version of this
+    # file lowercased every key, which silently matched nothing here: every
+    # coin came back "no pool indexed", including migrated ones with millions
+    # in market cap. Case is preserved end to end.
     out: dict[str, Market] = {}
-    unique = [a.lower() for a in dict.fromkeys(addresses) if a]
+    unique = [a for a in dict.fromkeys(addresses) if a]
     for start in range(0, len(unique), BATCH):
         chunk = unique[start : start + BATCH]
         url = f"{DEXSCREENER_BASE}/tokens/v1/{DEXSCREENER_CHAIN}/{','.join(chunk)}"
@@ -136,7 +140,7 @@ def markets_for(addresses: list[str]) -> dict[str, Market]:
         pairs = data if isinstance(data, list) else (data or {}).get("pairs") or []
         grouped: dict[str, list[dict]] = {}
         for pair in pairs:
-            base = ((pair.get("baseToken") or {}).get("address") or "").lower()
+            base = (pair.get("baseToken") or {}).get("address") or ""
             if base:
                 grouped.setdefault(base, []).append(pair)
         for address in chunk:
@@ -147,4 +151,4 @@ def markets_for(addresses: list[str]) -> dict[str, Market]:
 
 
 def market_for(address: str) -> Market | None:
-    return markets_for([address]).get(address.lower())
+    return markets_for([address]).get(address)
