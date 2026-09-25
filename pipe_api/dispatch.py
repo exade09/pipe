@@ -340,6 +340,14 @@ def health_route() -> dict:
         "holders": "available" if holders_available() else "needs a keyed rpc",
         "database": "configured" if db.configured() else "absent",
     }
+    if db.configured():
+        # Worth surfacing: without a shared candle store the chart falls back
+        # to per-instance memory, and on a serverless host that means it will
+        # say "stale" often. This number is how you tell it is working.
+        try:
+            out["stored"] = db.stats()
+        except Exception as exc:
+            out["database"] = f"configured but unreachable: {exc}"
     client = RpcClient()
     try:
         out["slot"] = client.slot()

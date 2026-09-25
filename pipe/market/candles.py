@@ -21,6 +21,15 @@ answer is kept past its TTL: when the ceiling is hit the chart keeps the
 candles it has and says they are a minute old, which is the honest thing and
 also the useful one. A refusal opens a short circuit breaker so the next
 viewer does not spend their request finding the same wall.
+
+There are two caches, and the second one is the one that matters in
+production. Process memory is fast and per-instance; on a serverless host that
+means it is empty for most requests, and a hundred readers would spend a
+hundred calls against a budget of two. So when a database is configured the
+bars go there as well, and one row decides which single instance is allowed
+upstream at all — everyone else reads what that instance wrote. Without a
+database nothing breaks; the terminal simply falls back to memory and says
+"stale" more often.
 """
 
 import json
@@ -31,6 +40,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from pipe import db
 from pipe.config import GECKOTERMINAL_BASE, GECKOTERMINAL_NETWORK, user_agent
 
 
@@ -197,29 +207,96 @@ def _roll(bars: list[dict], seconds: int) -> list[dict]:
     return out
 
 
+def fetch_source(pool: str, source: str, limit: int = 1000) -> list[dict]:
+    """One timeframe straight from GeckoTerminal, no caching. The cron's door."""
+    if source not in TIMEFRAMES:
+        return []
+    return _upstream(pool, source, limit)
+
+
+def _upstream(pool: str, source: str, limit: int) -> list[dict]:
+    unit, aggregate, _ = TIMEFRAMES[source]
+    return _parse(
+        _get(
+            f"/networks/{GECKOTERMINAL_NETWORK}/pools/{pool}/ohlcv/{unit}",
+            {"aggregate": aggregate, "limit": min(max(limit, 10), 1000), "currency": "usd"},
+        )
+    )
+
+
+def _merge(old: list[dict], new: list[dict]) -> list[dict]:
+    """
+    Stored bars plus fetched ones, newest version of each timestamp winning.
+    This is where history accumulates: GeckoTerminal serves a window, and
+    keeping the old window means the chart reaches back further than any single
+    call ever could.
+    """
+    if not old:
+        return new
+    by_time = {bar["t"]: bar for bar in old}
+    by_time.update({bar["t"]: bar for bar in new})
+    return sorted(by_time.values(), key=lambda b: b["t"])
+
+
 def _fetch(pool: str, source: str, limit: int) -> tuple[list[dict], float, bool]:
     """
-    One source timeframe for one pool, cached. Returns the bars, when they were
-    taken, and whether they are being served past their TTL because the free
-    tier refused a refresh.
+    One source timeframe for one pool. Returns the bars, when they were taken,
+    and whether they are being served past their TTL — which happens either
+    because the free tier refused a refresh or because another instance is
+    holding the fetch and this one is reading what it stored.
     """
-    unit, aggregate, _ = TIMEFRAMES[source]
     key = f"{pool}:{source}"
     hit = _bars.get(key)
     now = time.time()
     if hit and now - hit[0] < BAR_TTL:
         return hit[1]["bars"], hit[0], False
+
+    stored: list[dict] = []
+    age: float | None = None
+    if db.configured():
+        try:
+            stored = db.read_candles(pool, source, 1000)
+            age = db.candle_age(pool, source)
+        except Exception:
+            # A database that is unreachable is a slower terminal, not a
+            # broken one: everything below still works off memory.
+            stored, age = [], None
+
+        if stored and age is not None and age < BAR_TTL:
+            _bars[key] = (now - age, {"bars": stored})
+            return stored, now - age, False
+
+        # Exactly one instance goes upstream per TTL. The rest read what it
+        # wrote, which is the whole reason the shared table exists.
+        if not throttled():
+            try:
+                mine = db.claim_candle_fetch(pool, source, BAR_TTL)
+            except Exception:
+                mine = True
+            if mine:
+                fresh = _upstream(pool, source, limit)
+                if fresh:
+                    merged = _merge(stored, fresh)
+                    try:
+                        db.save_candles(pool, source, fresh)
+                    except Exception:
+                        pass
+                    _bars[key] = (now, {"bars": merged})
+                    return merged, now, False
+
+        if stored:
+            taken = now - (age or BAR_TTL)
+            _bars[key] = (taken, {"bars": stored})
+            return stored, taken, True
+
     if throttled() and hit:
         return hit[1]["bars"], hit[0], True
 
-    raw = _get(
-        f"/networks/{GECKOTERMINAL_NETWORK}/pools/{pool}/ohlcv/{unit}",
-        {"aggregate": aggregate, "limit": min(max(limit, 10), 1000), "currency": "usd"},
-    )
-    bars = _parse(raw)
-    if bars:
-        _bars[key] = (now, {"bars": bars})
-        return bars, now, False
+    fresh = _upstream(pool, source, limit)
+    if fresh:
+        merged = _merge(hit[1]["bars"] if hit else [], fresh)
+        _bars[key] = (now, {"bars": merged})
+        return merged, now, False
     if hit:
         return hit[1]["bars"], hit[0], True
     return [], 0.0, False

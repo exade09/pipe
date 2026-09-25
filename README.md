@@ -94,6 +94,11 @@ web/                      the terminal (Vite + React)
 | `GET /api/feed?limit=` | three columns: new, final stretch, migrated |
 | `GET /api/token/{mint}` | one coin, its authorities and its read |
 | `GET /api/token/{mint}/holders` | distribution for the bubble map — 409 without a key |
+| `GET /api/token/{mint}/candles?tf=` | OHLCV. `tf` is one of 1m, 5m, 15m, 1h, 4h, 1d |
+| `GET /api/wallet/{owner}?mint=` | SOL and token balance for the connected wallet |
+| `GET /api/tx/{signature}` | whether a swap confirmed, failed, or is still pending |
+| `POST /api/quote` | prices a route through Jupiter. `{side, mint, amount, slippage_bps}` |
+| `POST /api/swap` | builds an **unsigned** transaction. `{owner, quote}` |
 | `POST /api/index` | runs the indexer. Requires `Authorization: Bearer $CRON_SECRET` |
 
 ## Running it
@@ -112,10 +117,32 @@ That serves the API and the built frontend on one port, exactly as Vercel does.
 |---|---|
 | `HELIUS_API_KEY` | unlocks holders and the bubble map |
 | `SOLANA_RPC_URL` | a full RPC URL, if you would rather not use Helius |
-| `DATABASE_URL` | Vercel Postgres or Neon. Absent means live-only, no history |
+| `DATABASE_URL` | Vercel Postgres or Neon. Absent means live-only, no history — and a chart that says "stale" often |
+| `JUPITER_BASE` | overrides the swap router. The default lite host needs no key |
 | `CRON_SECRET` | required before `/api/index` will do anything |
 | `PUMPFUN_BASE` | overrides the launch feed host |
 | `PIPE_USER_AGENT` | what the feed sees. Must look like a browser |
+
+## Why the database matters more than it looks
+
+Everything on this terminal reads without a key except two calls, and one of
+them is the chart. GeckoTerminal is the only source that serves Solana OHLCV
+for free, and its free tier allows roughly **two calls before it blocks** —
+measured, not read off a docs page.
+
+In one long-lived process an in-memory cache hides that completely. On Vercel
+it does not: each request may land on a different instance with its own empty
+memory, so the same pool is asked for again and again and the ceiling is hit
+almost immediately. With `DATABASE_URL` set, bars fetched by any instance are
+read by all of them and one row decides which single instance is allowed to go
+upstream at all — so a hundred readers cost one call between them.
+
+It is also where history comes from. One call returns a window; storing every
+window and merging them means the chart eventually reaches further back than
+any single call ever could.
+
+Without a database nothing breaks. The chart simply falls back to per-instance
+memory and marks itself stale more often, which it says on screen.
 
 ## Two things to know before deploying
 

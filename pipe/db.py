@@ -69,6 +69,37 @@ create table if not exists market (
 );
 create index if not exists market_liquidity_idx on market (liquidity_usd desc);
 
+-- Candles, and the reason they are in here rather than in memory.
+--
+-- GeckoTerminal is the only source that serves Solana OHLCV without a key,
+-- and its free tier allows about two calls a minute. In one long-lived
+-- process an in-memory cache hides that. On Vercel it does not: every request
+-- may land on a different instance with its own empty memory, so the same
+-- pool gets asked for over and over and the ceiling is hit almost at once.
+--
+-- One shared table fixes both halves. Bars fetched by any instance are read
+-- by all of them, and `candle_fetch` is the lock that decides which single
+-- instance is allowed to go upstream at all.
+create table if not exists candles (
+  pool      text not null,
+  timeframe text not null,
+  t         bigint not null,
+  o         double precision not null,
+  h         double precision not null,
+  l         double precision not null,
+  c         double precision not null,
+  v         double precision not null,
+  primary key (pool, timeframe, t)
+);
+create index if not exists candles_read_idx on candles (pool, timeframe, t desc);
+
+create table if not exists candle_fetch (
+  pool       text not null,
+  timeframe  text not null,
+  fetched_at timestamptz not null default now(),
+  primary key (pool, timeframe)
+);
+
 create table if not exists holders_snapshot (
   mint           text primary key references coins(mint) on delete cascade,
   counted        int not null default 0,
@@ -202,7 +233,108 @@ def save_holders(mint: str, payload: dict) -> None:
         conn.commit()
 
 
+def claim_candle_fetch(pool: str, timeframe: str, ttl_seconds: float) -> bool:
+    """
+    Whether this instance is the one that goes to GeckoTerminal.
+
+    The insert succeeds only if nobody has fetched this pair inside the TTL, and
+    it succeeds for exactly one caller because the primary key serialises them.
+    Everyone who loses reads the bars the winner is about to write, which is the
+    whole point: a hundred readers on a hundred instances cost one upstream
+    call between them rather than a hundred refusals.
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into candle_fetch (pool, timeframe, fetched_at)
+                values (%s, %s, now())
+                on conflict (pool, timeframe) do update set fetched_at = now()
+                where candle_fetch.fetched_at < now() - make_interval(secs => %s)
+                returning pool
+                """,
+                (pool, timeframe, float(ttl_seconds)),
+            )
+            won = cur.fetchone() is not None
+        conn.commit()
+    return won
+
+
+def save_candles(pool: str, timeframe: str, bars: list[dict]) -> int:
+    """
+    Bars are immutable once closed, but the newest one is still forming — so the
+    write updates on conflict rather than ignoring it, and a bar that was half
+    built when it was first stored ends up complete.
+    """
+    if not bars:
+        return 0
+    rows = [
+        (pool, timeframe, int(b["t"]), float(b["o"]), float(b["h"]), float(b["l"]), float(b["c"]), float(b["v"]))
+        for b in bars
+    ]
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                insert into candles (pool, timeframe, t, o, h, l, c, v)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (pool, timeframe, t) do update set
+                  o = excluded.o, h = excluded.h, l = excluded.l,
+                  c = excluded.c, v = excluded.v
+                """,
+                rows,
+            )
+        conn.commit()
+    return len(rows)
+
+
 # ---------------------------------------------------------------- reads
+
+def read_candles(pool: str, timeframe: str, limit: int = 1000) -> list[dict]:
+    """Oldest first, because that is the direction a chart is drawn in."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select t, o, h, l, c, v from candles
+            where pool = %s and timeframe = %s
+            order by t desc limit %s
+            """,
+            (pool, timeframe, int(limit)),
+        )
+        rows = [
+            {"t": int(r["t"]), "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"], "v": r["v"]}
+            for r in cur.fetchall()
+        ]
+    rows.reverse()
+    return rows
+
+
+def candle_age(pool: str, timeframe: str) -> float | None:
+    """Seconds since anything last went upstream for this pair, or None."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "select extract(epoch from (now() - fetched_at)) as age from candle_fetch where pool = %s and timeframe = %s",
+            (pool, timeframe),
+        )
+        row = cur.fetchone()
+        return float(row["age"]) if row and row["age"] is not None else None
+
+
+def charted_pools(limit: int = 12) -> list[str]:
+    """
+    The pools worth keeping candles for between visits: the deepest ones, which
+    are the ones somebody is most likely to open next.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select pair_address from market
+            where pair_address <> ''
+            order by liquidity_usd desc limit %s
+            """,
+            (int(limit),),
+        )
+        return [row["pair_address"] for row in cur.fetchall()]
 
 FEED_SQL = """
 select c.mint, c.symbol, c.name, c.creator, c.bonding_curve, c.pool_address, c.created_ms,
@@ -262,4 +394,8 @@ def stats() -> dict:
         total = cur.fetchone()["n"]
         cur.execute("select count(*) as n from coins where complete")
         done = cur.fetchone()["n"]
-        return {"coins": total, "migrated": done}
+        cur.execute("select count(*) as n from candles")
+        bars = cur.fetchone()["n"]
+        cur.execute("select count(*) as n from candle_fetch")
+        pairs = cur.fetchone()["n"]
+        return {"coins": total, "migrated": done, "candles": bars, "charted_pairs": pairs}

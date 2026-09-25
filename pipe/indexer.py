@@ -20,9 +20,18 @@ from pipe import db
 from pipe.chain import pumpfun
 from pipe.chain.rpc import RpcClient, RpcError
 from pipe.chain.spl import mint_info_many
+from pipe.market import candles
 from pipe.market.dexscreener import markets_for
 
 PAGE = 60
+
+# The cron shares one ceiling with every reader: GeckoTerminal allows about two
+# calls before it blocks. So a run takes a couple of pools, spaces them, and
+# stops the moment it is refused — the next run picks up where this one left
+# off, because which pools are due is stored rather than recomputed.
+CANDLE_POOLS = 24
+CANDLE_PAUSE = 8.0
+CANDLE_TTL = 300.0
 
 
 def index_coins() -> dict:
@@ -95,15 +104,55 @@ def refresh_market(limit: int = 90) -> dict:
     return {"updated": db.upsert_market(payload), "looked_up": len(mints)}
 
 
+def refresh_candles(budget_seconds: float = 30.0, ttl: float = CANDLE_TTL) -> dict:
+    """
+    Keeps candles warm for the deepest pools, and — the part that matters more —
+    lets history accumulate. One call returns a window; storing every window and
+    merging them means the chart eventually reaches further back than any single
+    call to GeckoTerminal could.
+
+    The run is bounded twice over: by a time budget, so it finishes inside the
+    function's own limit, and by the rate ceiling, which ends it early rather
+    than spending the rest of the run collecting refusals.
+    """
+    if not db.configured():
+        return {"pools": 0, "reason": "no database"}
+    deadline = time.monotonic() + max(0.0, budget_seconds)
+    stored = 0
+    fetched = 0
+    considered = 0
+    for pool in db.charted_pools(CANDLE_POOLS):
+        for source in ("1m", "1h"):
+            if time.monotonic() >= deadline:
+                return {"pools": considered, "fetched": fetched, "bars": stored, "stopped": "out of time"}
+            if candles.throttled():
+                return {"pools": considered, "fetched": fetched, "bars": stored, "stopped": "rate limited"}
+            # The claim is what makes this resumable: a pool refreshed by an
+            # earlier run, or by a reader, is skipped without a call.
+            if not db.claim_candle_fetch(pool, source, ttl):
+                continue
+            considered += 1
+            bars = candles.fetch_source(pool, source, 1000)
+            if bars:
+                stored += db.save_candles(pool, source, bars)
+                fetched += 1
+            time.sleep(CANDLE_PAUSE)
+    return {"pools": considered, "fetched": fetched, "bars": stored}
+
+
 def run_all() -> dict:
     started = time.time()
     if db.configured():
         db.migrate()
     coins = index_coins()
     market = refresh_market()
+    # Whatever is left of the function's minute goes on candles, with a few
+    # seconds held back so the response itself is never the thing that times out.
+    candle = refresh_candles(budget_seconds=max(0.0, 52.0 - (time.time() - started)))
     return {
         "ok": True,
         "seconds": round(time.time() - started, 2),
         "coins": coins,
         "market": market,
+        "candles": candle,
     }
