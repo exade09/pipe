@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFeed, fetchHealth } from "./api.js";
 import Pulse from "./Pulse.jsx";
 import TokenPage from "./TokenPage.jsx";
+import Agent from "./Agent.jsx";
 
 const MARK = (
   <svg width="22" height="22" viewBox="0 0 512 512" aria-hidden="true">
@@ -20,7 +21,7 @@ const MARK = (
 );
 
 const FILTERS = [
-  ["safe", "Both authorities revoked"],
+  ["safe", "Authorities revoked"],
   ["indexed", "Has a pool"],
   ["clean", "No flags"],
 ];
@@ -32,6 +33,7 @@ export default function App() {
   const [mint, setMint] = useState(null);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState({ safe: false, indexed: false, clean: false });
+  const [agentOpen, setAgentOpen] = useState(true);
   const seen = useRef(new Set());
   const [freshest, setFreshest] = useState(null);
   const searchRef = useRef(null);
@@ -45,7 +47,7 @@ export default function App() {
       Object.values(data.columns).flat().forEach((r) => seen.current.add(r.mint));
       if (next) {
         setFreshest(next.mint);
-        setTimeout(() => setFreshest(null), 1600);
+        setTimeout(() => setFreshest(null), 1800);
       }
     } catch (e) {
       if (e.name !== "AbortError") setError(e.message);
@@ -64,6 +66,7 @@ export default function App() {
     function onKey(e) {
       if (e.target === searchRef.current) { if (e.key === "Escape") searchRef.current.blur(); return; }
       if (e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
+      else if (e.key.toLowerCase() === "a" && !e.metaKey && !e.ctrlKey) setAgentOpen((v) => !v);
       else if (e.key === "Escape" && mint) setMint(null);
     }
     document.addEventListener("keydown", onKey);
@@ -97,6 +100,9 @@ export default function App() {
         {feed && !feed.holders_available && (
           <span className="chip warn" title="getTokenLargestAccounts needs a keyed RPC"><i />no holder key</span>
         )}
+        <button className="iconbtn" aria-pressed={agentOpen} onClick={() => setAgentOpen((v) => !v)}>
+          ›_ agent
+        </button>
       </div>
 
       <div className="sub">
@@ -111,20 +117,26 @@ export default function App() {
         <span className="lbl">{total} coins across three columns</span>
       </div>
 
-      <div className="body">
-        {error && <div className="err">{error}</div>}
-        {!feed && !error && <div className="loading">reading pump.fun and the mint accounts</div>}
-        {feed && !mint && <Pulse columns={feed.columns} freshest={freshest} onOpen={setMint} filter={filter} />}
-        {feed && mint && <TokenPage mint={mint} onBack={() => setMint(null)} />}
+      <div className={`body${agentOpen ? " with-agent" : ""}`}>
+        <div style={{ minWidth: 0, minHeight: 0 }}>
+          {error && <div className="err">{error}</div>}
+          {!feed && !error && <div className="loading">reading pump.fun and the mint accounts</div>}
+          {feed && !mint && (
+            <Pulse columns={feed.columns} freshest={freshest} selected={mint}
+              onOpen={setMint} filter={filter} />
+          )}
+          {feed && mint && <TokenPage mint={mint} onBack={() => setMint(null)} />}
+        </div>
+        {agentOpen && <Agent mint={mint} onClose={() => setAgentOpen(false)} />}
       </div>
 
       <div className="strip">
         <span>launches {health?.launches ?? "…"}</span>
         <span>rpc {health?.rpc ?? "…"}</span>
         <span>holders {health?.holders ?? "…"}</span>
-        <span>db {health?.database ?? "…"}</span>
+        <span>agent not connected</span>
         <span style={{ marginLeft: "auto" }}>
-          curve state from pump.fun · authorities from the mint · price from dexscreener
+          curve from pump.fun · authorities from the mint · price from dexscreener
         </span>
       </div>
     </div>
