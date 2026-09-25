@@ -45,6 +45,37 @@ export function age(minutes) {
 export const short = (a) => (a ? `${a.slice(0, 4)}…${a.slice(-4)}` : "—");
 
 /*
+  Image hosts, in the order worth trying.
+
+  pump.fun writes its metadata to IPFS and hands out ipfs.io links, and
+  ipfs.io answers 403 to us — so the CID is re-pointed at pump's own pinata
+  gateway on the way out of the backend. That gateway serves most of them and
+  403s a minority for reasons it does not explain; the public pinata gateway
+  serves exactly those. So an IPFS picture gets two chances before the mark
+  stands in, and a picture hosted anywhere else gets one.
+*/
+const GATEWAYS = [
+  "https://pump.mypinata.cloud/ipfs/",
+  "https://gateway.pinata.cloud/ipfs/",
+];
+
+export function avatarChain(url = "", mint = "") {
+  const out = [];
+  if (url) {
+    out.push(url);
+    const cut = url.indexOf("/ipfs/");
+    if (cut > -1) {
+      const cid = url.slice(cut + 6);
+      GATEWAYS.forEach((g) => {
+        if (!out.includes(g + cid)) out.push(g + cid);
+      });
+    }
+  }
+  out.push(fallbackAvatar(mint));
+  return out;
+}
+
+/*
   A coin's real image comes from its metadata and reaches us through pump.fun
   or DexScreener. For the first moments there isn't one, and a grey box in
   every row makes the whole feed look broken — so a mint-derived mark stands

@@ -113,6 +113,22 @@ def _get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
         return None
 
 
+# pump.fun hands out image URLs on ipfs.io, and ipfs.io answers 403 to
+# anything that is not a browser it likes — so every fresh coin in the feed
+# rendered as a placeholder. The same CID served through pump's own pinata
+# gateway comes back as the real jpeg, png or webp in under a second.
+IPFS_IO = "https://ipfs.io/ipfs/"
+IPFS_GATEWAY = "https://pump.mypinata.cloud/ipfs/"
+
+
+def _image(uri: str) -> str:
+    if not uri:
+        return ""
+    if "/ipfs/" in uri and uri.startswith(IPFS_IO):
+        return IPFS_GATEWAY + uri.split("/ipfs/", 1)[1]
+    return uri
+
+
 def _to_coin(raw: dict) -> Coin | None:
     mint = raw.get("mint")
     if not mint:
@@ -124,7 +140,7 @@ def _to_coin(raw: dict) -> Coin | None:
         creator=raw.get("creator") or "",
         created_ms=int(raw.get("created_timestamp") or 0),
         complete=bool(raw.get("complete")),
-        image_uri=raw.get("image_uri") or "",
+        image_uri=_image(raw.get("image_uri") or ""),
         market_cap_usd=_num(raw.get("usd_market_cap")),
         market_cap_sol=_num(raw.get("market_cap")),
         real_sol=_num(raw.get("real_sol_reserves")) / LAMPORTS,

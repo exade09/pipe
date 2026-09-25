@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { usd, age, fallbackAvatar } from "./api.js";
+import { usd, age } from "./api.js";
+import Avatar from "./Avatar.jsx";
 
 /*
   Three columns, and on this chain all three rest on a real field rather than
@@ -9,25 +10,28 @@ import { usd, age, fallbackAvatar } from "./api.js";
     Final stretch  sorted by how much the curve has actually taken
     Migrated       pump.fun's own `complete` flag, not a guess from age
 
-  A row is a card. The pills under the name are the facts that decide whether
-  it is worth opening at all — the two mint authorities first, because a coin
-  that can still be inflated or frozen is settled before liquidity or holders
-  are worth a glance.
+  A row is a card with a fixed rhythm: avatar, three lines, and a right edge
+  that carries the age and the action. Every line is one line — nothing wraps,
+  because a column of cards that each choose their own height reads as a list
+  of paragraphs rather than as a feed, and the eye loses the left edge.
 
-  The bar is curve progress and only fills for a coin that has migrated. A
-  curve sitting past the threshold but still open is capped short on purpose:
-  a full bar next to something that has not graduated is a lie the eye
-  believes before the label corrects it.
+  So the facts are short. `mint ✓` rather than MINT REVOKED: the reader is
+  scanning for the absence of a red pill, not reading sentences. Anything that
+  will not fit is clipped at the card edge instead of pushing the card taller.
+
+  Curve progress is the hairline along the bottom of the card. It belongs to
+  the card, not to a row inside it, and it only reaches the full width for a
+  coin that has migrated — a curve past the threshold but still open is capped
+  short on purpose, because a full bar next to something that has not
+  graduated is a lie the eye believes before the label corrects it.
 */
 
-function Avatar({ row }) {
-  const [src, setSrc] = useState(row.image_url || fallbackAvatar(row.mint));
+function Face({ row }) {
   return (
-    <img
-      className="av" width="42" height="42" src={src} alt=""
-      loading="lazy" referrerPolicy="no-referrer"
-      onError={() => setSrc(fallbackAvatar(row.mint))}
-    />
+    <span className="avwrap">
+      <Avatar url={row.image_url} mint={row.mint} size={40} />
+      <i className={`dot ${row.risk || "watch"}`} />
+    </span>
   );
 }
 
@@ -37,19 +41,19 @@ function Pills({ row }) {
   if (!row.mint_readable) {
     pills.push(["mint ?", "warn"]);
   } else {
-    pills.push(row.can_inflate ? ["mint open", "bad"] : ["mint revoked", "good"]);
-    pills.push(row.can_freeze ? ["freeze on", "bad"] : ["freeze revoked", "good"]);
+    pills.push(row.can_inflate ? ["mint live", "bad"] : ["mint ✓", "good"]);
+    pills.push(row.can_freeze ? ["freeze on", "bad"] : ["freeze ✓", "good"]);
   }
 
   if (row.indexed) {
     const buys = Number(row.buys_h1) || 0;
     const sells = Number(row.sells_h1) || 0;
-    if (buys + sells > 0) pills.push([`${buys}b / ${sells}s`, buys >= sells ? "good" : ""]);
+    if (buys + sells > 0) pills.push([`${buys}b/${sells}s`, buys >= sells ? "good" : ""]);
   } else {
     pills.push(["no pool", ""]);
   }
 
-  if (row.reply_count > 0) pills.push([`${row.reply_count} replies`, ""]);
+  if (row.reply_count > 0) pills.push([`${row.reply_count}r`, ""]);
 
   return (
     <span className="pills">
@@ -67,38 +71,40 @@ function Row({ row, fresh, selected, onOpen }) {
     <button
       className={`row${fresh ? " fresh" : ""}${selected ? " sel" : ""}`}
       onClick={() => onOpen(row.mint)}
+      title={`${row.symbol || "?"} — ${row.name || ""}`}
     >
-      <Avatar row={row} />
-      <span>
+      <Face row={row} />
+
+      <span className="mid">
         <span className="l1">
           <span className="s">{row.symbol || "?"}</span>
-          <span className={`flag ${row.risk || "watch"}`}>
-            {row.risk === "risk" ? "flagged" : row.risk === "ok" ? "clean" : "watch"}
-          </span>
           <span className="nm">{row.name || ""}</span>
-          <span className="age">{age(row.age_minutes)}</span>
         </span>
 
         <span className="l2">
-          <span>MC <b>{usd(row.fdv)}</b></span>
-          {row.indexed && (
+          <span className="kv1">MC <b>{usd(row.fdv)}</b></span>
+          {row.indexed ? (
             <>
-              <span>LP <b>{usd(row.liquidity_usd)}</b></span>
-              <span>V1h <b>{usd(row.volume_h1)}</b></span>
+              <span className="kv1">LP <b>{usd(row.liquidity_usd)}</b></span>
+              <span className="kv1">V <b>{usd(row.volume_h1)}</b></span>
               <span className={change >= 0 ? "up" : "down"}>
                 {change >= 0 ? "+" : ""}{change.toFixed(1)}%
               </span>
             </>
+          ) : (
+            <span className="kv1 dim">{row.complete ? "pool not indexed" : `${pct}% of curve`}</span>
           )}
         </span>
 
         <Pills row={row} />
-
-        <span className="l3">
-          <span className={`bar${row.complete ? " done" : ""}`}><i style={{ width: `${pct}%` }} /></span>
-          <span className="dim tiny">{row.complete ? "migrated" : `${pct}%`}</span>
-        </span>
       </span>
+
+      <span className="right">
+        <span className="age">{age(row.age_minutes)}</span>
+        <span className="buy" aria-hidden="true">buy</span>
+      </span>
+
+      <span className={`edge${row.complete ? " done" : ""}`}><i style={{ width: `${pct}%` }} /></span>
     </button>
   );
 }

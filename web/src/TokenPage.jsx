@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { fetchToken, fetchHolders, usd, age, short, fallbackAvatar } from "./api.js";
+import { fetchToken, fetchHolders, usd, age, short } from "./api.js";
+import Avatar from "./Avatar.jsx";
 import BubbleMap from "./BubbleMap.jsx";
 
 const TABS = [
@@ -8,14 +9,6 @@ const TABS = [
   ["bubble", "Bubble map"],
   ["security", "Security"],
 ];
-
-function Avatar({ token, size = 30 }) {
-  const [src, setSrc] = useState(token.image_url || fallbackAvatar(token.mint));
-  return (
-    <img className="av" width={size} height={size} src={src} alt="" referrerPolicy="no-referrer"
-      onError={() => setSrc(fallbackAvatar(token.mint))} />
-  );
-}
 
 function Change({ value }) {
   const n = Number(value) || 0;
@@ -63,7 +56,7 @@ export default function TokenPage({ mint, onBack }) {
       <div className="tmain">
         <div className="thead">
           <button className="back" onClick={onBack}>← pulse</button>
-          <Avatar token={t} />
+          <Avatar url={t.image_url} mint={t.mint} size={30} />
           <span>
             <b style={{ fontSize: 15 }}>{t.symbol}</b>{" "}
             <span className={`flag ${read.risk}`}>

@@ -149,12 +149,16 @@ a { color: var(--type); text-decoration: none; }
 .colhead b { font-size: 12.5px; letter-spacing: .04em; }
 .colhead .n { font-size: 10.5px; color: var(--dimmer); margin-left: auto; }
 .colhead .why { font-size: 10px; color: var(--dimmer); }
-.colbody { overflow-y: auto; flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+.colbody { overflow-y: auto; flex: 1; padding: 7px; display: flex; flex-direction: column; gap: 6px; }
 
-/* a row is a card: hairline, radius, and a lift on hover */
+/* A row is a card with a fixed rhythm — avatar, three lines, right edge.
+   Every inner line is nowrap and clipped, so a hundred cards keep one height
+   and the column reads as a feed instead of as a stack of paragraphs. */
 .row {
-  display: grid; grid-template-columns: 42px 1fr; gap: 11px;
-  padding: 11px 12px; width: 100%; text-align: left; cursor: pointer;
+  position: relative; overflow: hidden;
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px;
+  align-items: center;
+  padding: 9px 10px 11px; width: 100%; text-align: left; cursor: pointer;
   background: var(--raised); color: inherit;
   border: 1px solid var(--line); border-radius: var(--r);
   transition: background .12s ease, border-color .12s ease, transform .12s ease;
@@ -162,6 +166,7 @@ a { color: var(--type); text-decoration: none; }
 .row:hover {
   background: var(--raised-2); border-color: var(--line2); transform: translateY(-1px);
 }
+.row:hover .buy { color: #000; background: var(--copper); border-color: var(--copper); }
 .row:focus-visible { outline: 2px solid var(--copper); outline-offset: 1px; }
 .row.sel { border-color: var(--copper); background: #17110b; }
 .row.fresh { animation: flash 1.6s ease-out; }
@@ -170,40 +175,72 @@ a { color: var(--type); text-decoration: none; }
   to { background: var(--raised); border-color: var(--line); }
 }
 
-.row .l1 { display: flex; align-items: baseline; gap: 7px; }
-.row .s { font-size: 13.5px; font-weight: 500; letter-spacing: .01em; }
+.row .mid { min-width: 0; display: block; }
+
+.row .l1 { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.row .s {
+  font-size: 13px; font-weight: 500; letter-spacing: .01em; flex: none;
+  max-width: 11ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .row .nm {
-  font-size: 10.5px; color: var(--dimmer);
+  font-size: 10.5px; color: var(--dimmer); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.row .age { margin-left: auto; font-size: 10.5px; color: var(--dim); flex: none; }
 
-.row .l2 { display: flex; gap: 9px; margin-top: 5px; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
+.row .l2 {
+  display: flex; gap: 9px; margin-top: 3px; font-size: 10.5px; color: var(--dim);
+  white-space: nowrap; overflow: hidden;
+}
 .row .l2 b { color: var(--type); font-weight: 400; }
+.row .kv1 { flex: none; }
 
-/* pills carry the facts that decide whether a coin is worth opening */
-.pills { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+/* the pills are the scan line: the reader is looking for the absence of red */
+.pills { display: flex; gap: 4px; margin-top: 6px; white-space: nowrap; overflow: hidden; }
 .pill {
-  font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
-  border: 1px solid var(--line2); border-radius: 3px; padding: 1px 5px;
-  color: var(--dim); background: #0c0a09; white-space: nowrap;
+  font-size: 9.5px; letter-spacing: .02em; flex: none;
+  border: 1px solid var(--line2); border-radius: 3px; padding: 0 5px; line-height: 15px;
+  color: var(--dim); background: #0c0a09;
 }
 .pill.good { color: var(--up); border-color: #17402c; background: #08130d; }
 .pill.bad { color: var(--down); border-color: #46201a; background: #150a08; }
 .pill.warn { color: var(--hi); border-color: #4a3418; background: #150f07; }
 
-.row .l3 { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
-.bar { height: 3px; background: #1a1613; border-radius: 2px; flex: 1; position: relative; overflow: hidden; }
-.bar i {
-  position: absolute; inset: 0 auto 0 0; display: block; border-radius: 2px;
-  background: linear-gradient(90deg, #a8561a, var(--copper));
+.row .right {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none;
 }
-.bar.done i { background: linear-gradient(90deg, var(--copper), var(--hi)); }
+.row .age { font-size: 10.5px; color: var(--dim); }
+.row .buy {
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  border: 1px solid var(--line2); border-radius: 3px; padding: 3px 9px;
+  color: var(--dimmer); background: #0c0a09;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
 
+/* Curve progress belongs to the card, so it runs along the card's own edge.
+   A coin that has migrated draws nothing: a full-width copper line on every
+   card in the Migrated column is a row divider, not information — the column
+   heading already said the curve finished. */
+.edge { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #17130f; }
+.edge i {
+  position: absolute; inset: 0 auto 0 0; display: block;
+  background: linear-gradient(90deg, #8f4a17, var(--copper)); opacity: .85;
+}
+.edge.done { display: none; }
+
+.avwrap { position: relative; display: block; width: 40px; height: 40px; flex: none; }
 .av {
   border: 1px solid var(--line2); border-radius: var(--r);
-  display: block; flex: none; background: #000; object-fit: cover;
+  display: block; background: #000; object-fit: cover;
 }
+.avwrap .av { width: 40px; height: 40px; }
+.avwrap .dot {
+  position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px;
+  border-radius: 50%; border: 2px solid var(--raised); display: block;
+}
+.avwrap .dot.ok { background: var(--up); }
+.avwrap .dot.risk { background: var(--down); }
+.avwrap .dot.watch { background: var(--hi); }
+.row:hover .avwrap .dot { border-color: var(--raised-2); }
 
 .flag {
   display: inline-block; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
