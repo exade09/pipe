@@ -34,6 +34,7 @@ from pipe.chain.spl import mint_info_many
 from pipe.config import DEXSCREENER_CHAIN, LAMPORTS, WSOL_MINT, holders_available
 from pipe.market import jupiter
 from pipe.market.candles import TIMEFRAMES, CandlesUnavailable, series
+from pipe.market.curve_candles import series as curve_series
 from pipe.market.dexscreener import markets_for
 
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -260,12 +261,23 @@ def candles_route(mint: str, query: dict) -> dict:
     """
     timeframe = (query.get("tf", ["5m"])[0] or "5m").strip()
     pool = (query.get("pool", [""])[0] or "").strip()
+    token = None
     if not pool:
         # DexScreener already knows the deepest pair and answers generously.
         # GeckoTerminal does not, so its budget goes entirely on the candles.
         found = cached(f"pair:{mint}", 120.0, lambda: markets_for([mint]).get(mint))
         pool = getattr(found, "pair_address", "") or ""
         known_dex = getattr(found, "dex", "") or ""
+        prior_token = _CACHE.get(f"token:{mint}")
+        token_payload = token_route(mint)
+        token = (token_payload.get("data") or {}).get("token") if token_payload.get("ok") else None
+        if not token and prior_token and isinstance(prior_token[1], dict):
+            token = prior_token[1].get("token")
+        if not token and db.configured():
+            try:
+                token = db.coin(mint)
+            except Exception:
+                token = None
     else:
         known_dex = ""
     try:
@@ -273,7 +285,24 @@ def candles_route(mint: str, query: dict) -> dict:
     except (TypeError, ValueError):
         limit = 300
     try:
-        data = series(mint, timeframe=timeframe, limit=limit, pool=pool)
+        if token and not token.get("complete") and token.get("bonding_curve"):
+            coin = pumpfun.one(mint)
+            sol_market = cached(f"pair:{WSOL_MINT}", 60.0, lambda: markets_for([WSOL_MINT]).get(WSOL_MINT))
+            sol_usd = float(getattr(sol_market, "price_usd", 0.0) or 0.0)
+            if sol_usd <= 0 and coin and coin.market_cap_usd > 0 and coin.market_cap_sol > 0:
+                sol_usd = coin.market_cap_usd / coin.market_cap_sol
+            if sol_usd <= 0:
+                raise CandlesUnavailable("The live curve has not published a USD reference price yet.")
+            data = curve_series(
+                mint,
+                curve=token["bonding_curve"],
+                decimals=int(token.get("decimals") or 6),
+                sol_usd=sol_usd,
+                timeframe=timeframe,
+                limit=limit,
+            )
+        else:
+            data = series(mint, timeframe=timeframe, limit=limit, pool=pool)
     except CandlesUnavailable as exc:
         return envelope(False, error=str(exc))
     return envelope(
@@ -285,6 +314,7 @@ def candles_route(mint: str, query: dict) -> dict:
             "timeframe": data.timeframe,
             "timeframes": list(TIMEFRAMES),
             "stale": data.stale,
+            "source": getattr(data, "source", "DEX OHLCV"),
             "fetched_at": data.fetched_at,
             "bars": data.bars,
         },
