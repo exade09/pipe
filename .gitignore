@@ -8,3 +8,8 @@ web/dist/
 
 .vercel
 .env*
+
+# local agent tooling the Vercel CLI drops in; not part of the product
+.agents/
+.claude/
+skills-lock.json
