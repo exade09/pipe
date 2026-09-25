@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from pipe_api.dispatch import handle_get, handle_post
+from pipe_api.images import fetch as fetch_image
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web" / "dist"
@@ -53,6 +54,23 @@ def _static(handler: BaseHTTPRequestHandler, path: str) -> bool:
 class handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/image":
+            # Images are bytes, not an envelope, and they are cached hard: a
+            # coin's picture does not change, so the second reader should never
+            # reach this function at all.
+            target = (parse_qs(parsed.query).get("u") or [""])[0]
+            status, kind, body = fetch_image(target) if target else (400, "text/plain", b"no url")
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header(
+                "Cache-Control",
+                "public, max-age=604800, immutable" if status == 200 else "public, max-age=60",
+            )
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path.startswith("/api/"):
             # A route that raises must still answer. Without this the socket
             # simply closes and the browser reports "Failed to fetch", which

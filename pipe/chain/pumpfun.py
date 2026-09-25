@@ -73,8 +73,15 @@ class Coin:
 
     @property
     def age_minutes(self) -> int:
+        """
+        Unknown reads as zero rather than as fifty years. A coin assembled off
+        the chain has no creation time, and dating it from the epoch put
+        "20721d old" on the page.
+        """
         import time as _t
 
+        if self.created_ms <= 0:
+            return 0
         return max(0, int((_t.time() * 1000 - self.created_ms) / 60000))
 
 
@@ -153,12 +160,31 @@ def _to_coin(raw: dict) -> Coin | None:
     )
 
 
+# Coins the list endpoint has handed us, kept so the page for one of them can
+# be built when the per-coin endpoint will not answer. That endpoint 404s for
+# the newest launches - the ones the list returned seconds earlier - and
+# falling through to the chain alone costs the name, the symbol, the creator
+# and the real curve position.
+_seen: dict[str, Coin] = {}
+_SEEN_LIMIT = 2000
+
+
+def remembered(mint: str) -> Coin | None:
+    return _seen.get(mint)
+
+
 def _coins(params: dict) -> list[Coin]:
     raw = _get("/coins", params)
     if not isinstance(raw, list):
         return []
     out = [_to_coin(item) for item in raw if isinstance(item, dict)]
-    return [coin for coin in out if coin is not None]
+    coins = [coin for coin in out if coin is not None]
+    for coin in coins:
+        _seen[coin.mint] = coin
+    if len(_seen) > _SEEN_LIMIT:
+        for mint in list(_seen)[: len(_seen) - _SEEN_LIMIT]:
+            _seen.pop(mint, None)
+    return coins
 
 
 def newest(limit: int = 60, offset: int = 0, include_nsfw: bool = False) -> list[Coin]:
@@ -216,6 +242,9 @@ def migrated(limit: int = 40) -> list[Coin]:
 
 def one(mint: str) -> Coin | None:
     raw = _get(f"/coins/{mint}")
-    if not isinstance(raw, dict):
-        return None
-    return _to_coin(raw)
+    if isinstance(raw, dict):
+        coin = _to_coin(raw)
+        if coin:
+            _seen[coin.mint] = coin
+            return coin
+    return remembered(mint)

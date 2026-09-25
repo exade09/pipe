@@ -127,6 +127,11 @@ const GATEWAYS = [
 export function avatarChain(url = "", mint = "") {
   const out = [];
   if (url) {
+    // Our own server fetches it first. There is no CORS between two servers,
+    // it can walk the gateway chain without the browser knowing, and the edge
+    // caches the answer - which is why a picture that 403s in a tab still
+    // arrives here.
+    out.push(`/api/image?u=${encodeURIComponent(url)}`);
     out.push(url);
     const cut = url.indexOf("/ipfs/");
     if (cut > -1) {

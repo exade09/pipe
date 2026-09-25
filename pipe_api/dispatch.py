@@ -27,7 +27,7 @@ from typing import Any
 from pipe import db
 from pipe.analysis.agent import AgentUnavailable, analyze as agent_analyze, configured as agent_configured
 from pipe.analysis import read as reader
-from pipe.chain import pumpfun
+from pipe.chain import pda, pumpfun
 from pipe.chain.holders import distribution
 from pipe.chain.rpc import RpcClient, RpcError, RpcUnavailable
 from pipe.chain.spl import mint_info_many
@@ -161,20 +161,26 @@ def _coin_off_chain(mint: str):
     decimals = int((supply or {}).get("decimals") or 6)
     total = int((supply or {}).get("amount") or 0)
     created = market.created_at_ms if market else 0
+    # The curve account is a program address over the mint, so it is computed
+    # rather than looked up. Without it a coin pump.fun has not indexed loses
+    # its live candles, which is the whole chart for a launch that new.
+    curve = pda.bonding_curve(mint)
     return pumpfun.Coin(
         mint=mint,
         name=(market.base_name if market else "") or "",
         symbol=(market.base_symbol if market else "") or (mint[:4] + "…"),
         creator="",
         created_ms=created,
-        complete=True,
+        # No market anywhere means it has not migrated, which is what puts the
+        # chart on the live curve rather than on a pool that does not exist.
+        complete=bool(market and market.pair_address),
         image_uri=(market.image_url if market else "") or "",
         market_cap_usd=(market.fdv or market.market_cap) if market else 0.0,
         market_cap_sol=0.0,
         real_sol=0.0,
         total_supply=total,
         decimals=decimals,
-        bonding_curve="",
+        bonding_curve=curve,
         pool_address=(market.pair_address if market else "") or "",
         reply_count=0,
         nsfw=False,
@@ -322,7 +328,11 @@ def candles_route(mint: str, query: dict) -> dict:
     except (TypeError, ValueError):
         limit = 300
     try:
-        if token and not token.get("complete") and token.get("bonding_curve"):
+        # A pool beats the curve whenever one exists. pump.fun's `complete`
+        # flag lags - coins with deep pumpswap pools still report false - so
+        # reading it here sent coins that trade on a pool to a curve that had
+        # gone quiet, and their chart went with it.
+        if token and token.get("bonding_curve") and not pool:
             coin = pumpfun.one(mint)
             sol_market = cached(f"pair:{WSOL_MINT}", 60.0, lambda: markets_for([WSOL_MINT]).get(WSOL_MINT))
             sol_usd = float(getattr(sol_market, "price_usd", 0.0) or 0.0)
@@ -348,8 +358,13 @@ def candles_route(mint: str, query: dict) -> dict:
     # minute chart, which is the picture the screenshot showed.
     seconds = TIMEFRAMES[data.timeframe][2]
     bars, real = densify(data.bars, seconds)
-    if real < 3:
-        span = (data.bars[-1]["t"] - data.bars[0]["t"]) if len(data.bars) > 1 else 0
+    span = (data.bars[-1]["t"] - data.bars[0]["t"]) if len(data.bars) > 1 else 0
+
+    # The frame is wrong only when the history is spread far wider than it can
+    # show. A coin minutes old has few bars because it is minutes old, not
+    # because the frame is wrong, and refusing that would blank the chart for
+    # exactly the launches this terminal exists to watch.
+    if not bars or (real < 3 and span > seconds * WINDOW_BARS * 2):
         better = next(
             (name for name, (_, _, size) in TIMEFRAMES.items() if size * WINDOW_BARS >= span and size > seconds),
             "1d",
@@ -357,8 +372,8 @@ def candles_route(mint: str, query: dict) -> dict:
         return envelope(
             False,
             error=(
-                f"Only {real} bar{'' if real == 1 else 's'} traded inside the {data.timeframe} window. "
-                f"This pair is too quiet for that frame - try {better}."
+                f"Only {real} bar{'' if real == 1 else 's'} traded inside the {data.timeframe} window, "
+                f"and this coin's history is far wider than that frame shows - try {better}."
             ),
         )
 
