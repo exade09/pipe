@@ -146,13 +146,21 @@ memory and marks itself stale more often, which it says on screen.
 
 ## Two things to know before deploying
 
-**The cron in `vercel.json` runs every minute.** Minute-level schedules need a
-Pro plan; on Hobby, Vercel quietly reduces it to daily. The terminal still
-works — the feed is live either way — but nothing accumulates.
+**The cron in `vercel.json` runs once a day, and that is a Hobby-plan limit
+rather than a choice.** A minute-level schedule does not get quietly reduced —
+Vercel refuses the deployment outright with "Hobby accounts are limited to
+daily cron jobs". On Pro, change the schedule to `* * * * *` and the indexer
+keeps the feed and the candles warm minute by minute.
 
-**Trading is not wired.** The order panel is present and disabled, and says so.
-There is no wallet adapter, no signing and no approvals: nothing can leave an
-account from this screen.
+Little depends on it either way. The feed is live on every request, and the
+candle store fills from whoever opens a chart: the reader's own fetch is what
+gets written, and the cron only warms pools nobody has opened yet.
+
+**Trading is wired, and your wallet is the only thing that signs.** The backend
+prices a route through Jupiter and builds an *unsigned* transaction; the
+browser hands it to Phantom, Solflare or Backpack, and the wallet both signs
+and sends it. No key is held anywhere in this product and the server has no way
+to submit what it built.
 
 ---
 
