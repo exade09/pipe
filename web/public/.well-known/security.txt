@@ -1,0 +1,19 @@
+# Pipe - a read-only Solana terminal with a non-custodial swap panel.
+# Published so anyone reviewing this domain can reach a human quickly.
+
+Contact: https://x.com/pipeterminal
+Expires: 2027-09-25T00:00:00.000Z
+Preferred-Languages: en, ru
+Canonical: https://pipeterminal.xyz/.well-known/security.txt
+Policy: https://pipeterminal.xyz/docs
+
+# What this site does with a wallet, stated plainly:
+#   - it asks to connect, to read a public address and its balances
+#   - it prices a swap route through Jupiter (https://jup.ag)
+#   - it asks the wallet to sign and send that one swap transaction
+#
+# What it never does:
+#   - it holds no private keys and no seed phrase, and never asks for one
+#   - it requests no token approvals and no account authority changes
+#   - it cannot submit a transaction itself: the server builds an unsigned
+#     transaction, and only the user's own wallet signs and broadcasts it
