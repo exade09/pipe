@@ -88,7 +88,9 @@ class handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 body = {}
         try:
-            routed = handle_post(parsed.path, bool(want) and got == want, body)
+            forwarded = (self.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+            client_id = forwarded or (self.client_address[0] if self.client_address else "")
+            routed = handle_post(parsed.path, bool(want) and got == want, body, client_id)
         except Exception as exc:
             _send(self, 502, {"ok": False, "data": None, "error": f"{type(exc).__name__}: {exc}"})
             return

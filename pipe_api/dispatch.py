@@ -19,11 +19,13 @@ a keyed endpoint is configured.
 """
 
 import json
+import re
 import time
 from dataclasses import asdict
 from typing import Any
 
 from pipe import db
+from pipe.analysis.agent import AgentUnavailable, analyze as agent_analyze, configured as agent_configured
 from pipe.analysis import read as reader
 from pipe.chain import pumpfun
 from pipe.chain.holders import distribution
@@ -35,6 +37,7 @@ from pipe.market.candles import TIMEFRAMES, CandlesUnavailable, series
 from pipe.market.dexscreener import markets_for
 
 _CACHE: dict[str, tuple[float, Any]] = {}
+_AGENT_CALLS: dict[str, list[float]] = {}
 
 
 def cached(key: str, seconds: float, build):
@@ -148,8 +151,61 @@ def token_route(mint: str) -> dict:
 
     data = cached(f"token:{mint}", 10.0, build)
     if not data:
-        return envelope(False, error="Coin not found on pump.fun.")
+        return envelope(False, error="Token not found in the live launch index.")
     return envelope(True, data)
+
+
+def agent_route(body: dict, client_id: str = "") -> tuple[int, dict]:
+    mint = str(body.get("mint") or "").strip()
+    question = str(body.get("question") or "").strip()
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,64}", mint):
+        return 400, envelope(False, error="A valid Solana mint is required.")
+    if not question or len(question) > 500:
+        return 400, envelope(False, error="Ask a question between 1 and 500 characters.")
+    if not agent_configured():
+        return 503, envelope(False, error="Fable 5.1 is not configured on this deployment yet.")
+
+    now = time.time()
+    bucket = _AGENT_CALLS.setdefault((client_id or "anonymous")[:80], [])
+    bucket[:] = [stamp for stamp in bucket if now - stamp < 60]
+    if len(bucket) >= 8:
+        return 429, envelope(False, error="Fable 5.1 is receiving too many requests. Try again in a minute.")
+    bucket.append(now)
+
+    token_payload = token_route(mint)
+    if not token_payload["ok"]:
+        return 404, token_payload
+    source = token_payload["data"]
+    token = source["token"]
+    facts: dict[str, Any] = {
+        "token": {
+            key: token.get(key)
+            for key in (
+                "mint", "symbol", "name", "age_minutes", "complete", "progress", "stage",
+                "mint_readable", "can_inflate", "can_freeze", "indexed", "price_usd",
+                "liquidity_usd", "fdv", "volume_h1", "volume_h24", "buys_h1", "sells_h1",
+                "change_m5", "change_h1", "change_h24", "quote_symbol",
+            )
+        },
+        "deterministic_read": source.get("read") or {},
+        "holder_distribution": {"available": False},
+    }
+    if holders_available():
+        holder_payload = holders_route(mint)
+        if holder_payload["ok"]:
+            h = holder_payload["data"]
+            facts["holder_distribution"] = {
+                "available": True,
+                "wallets_counted": h.get("counted"),
+                "top10_share": h.get("top10_share"),
+                "creator_share": h.get("creator_share"),
+                "curve_share": h.get("curve_share"),
+                "truncated": h.get("truncated"),
+            }
+    try:
+        return 200, envelope(True, agent_analyze(facts=facts, question=question))
+    except AgentUnavailable as exc:
+        return 503, envelope(False, error=str(exc))
 
 
 def holders_route(mint: str) -> dict:
@@ -339,6 +395,8 @@ def health_route() -> dict:
         "dexscreener": DEXSCREENER_CHAIN,
         "holders": "available" if holders_available() else "needs a keyed rpc",
         "database": "configured" if db.configured() else "absent",
+        "agent": "ready" if agent_configured() else "needs OPENAI_API_KEY",
+        "agent_runtime": "Fable 5.1",
     }
     if db.configured():
         # Worth surfacing: without a shared candle store the chart falls back
@@ -395,7 +453,14 @@ def handle_get(path: str, query: dict) -> tuple[int, dict] | None:
     return None
 
 
-def handle_post(path: str, secret_ok: bool, body: dict | None = None) -> tuple[int, dict] | None:
+def handle_post(
+    path: str,
+    secret_ok: bool,
+    body: dict | None = None,
+    client_id: str = "",
+) -> tuple[int, dict] | None:
+    if path == "/api/agent/analyze":
+        return agent_route(body or {}, client_id)
     if path == "/api/quote":
         return quote_route(body or {})
     if path == "/api/swap":

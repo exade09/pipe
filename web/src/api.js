@@ -47,6 +47,7 @@ async function post(path, body, signal) {
 
 export const fetchQuote = (body, signal) => post("/api/quote", body, signal);
 export const buildSwap = (body, signal) => post("/api/swap", body, signal);
+export const fetchAgentAnalysis = (body, signal) => post("/api/agent/analyze", body, signal);
 
 /* ----------------------------------------------------------- amounts */
 

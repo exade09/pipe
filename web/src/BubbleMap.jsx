@@ -1,125 +1,195 @@
 import { useMemo, useRef, useState } from "react";
 import { short } from "./api.js";
 
-/*
-  The bubble map.
+const W = 840;
+const H = 460;
+const CX = W / 2;
+const CY = H / 2;
+const GOLDEN = 2.399963;
 
-  Circles are wallets, area is share. Several token accounts belonging to one
-  wallet collapse into a single circle, because a person holding through three
-  accounts is one holder and drawing them apart would overstate how wide the
-  book is.
-
-  What this map deliberately does not draw: lines between wallets. On an EVM
-  chain the transfer log gives funding relationships for nothing, so joining
-  wallets that were funded from one address is honest and cheap. On Solana
-  that needs signature history per wallet, which is a different order of cost,
-  and drawing a relationship we have not verified would be worse than drawing
-  none. The one relationship we do know — that a wallet belongs to the coin's
-  creator — is marked in copper.
-*/
-
-const W = 760;
-const H = 420;
+function seed(value = "") {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash);
+}
 
 function layout(holders) {
-  const nodes = holders.slice(0, 40).map((h, i) => {
-    const angle = (i * 2.39996) % (Math.PI * 2);
-    const radius = 30 + (i % 9) * 19;
+  const nodes = holders.slice(0, 40).map((holder, index) => {
+    const offset = (seed(holder.owner || holder.account) % 628) / 100;
+    const ring = index < 6 ? 0 : index < 18 ? 1 : 2;
+    const targetRadius = 112 + ring * 82 + (seed(holder.account) % 17);
+    const angle = index * GOLDEN + offset;
+    const radius = Math.max(12, Math.min(58, 10 + Math.sqrt(Math.max(holder.share, 0.03)) * 8.2));
     return {
-      h,
-      x: W / 2 + Math.cos(angle) * radius,
-      y: H / 2 + Math.sin(angle) * radius,
-      r: Math.max(7, Math.sqrt(Math.max(h.share, 0.05)) * 13),
+      holder,
+      rank: index + 1,
+      radius,
+      targetX: CX + Math.cos(angle) * targetRadius,
+      targetY: CY + Math.sin(angle) * targetRadius * 0.72,
+      x: CX + Math.cos(angle) * targetRadius,
+      y: CY + Math.sin(angle) * targetRadius * 0.72,
     };
   });
 
-  for (let step = 0; step < 200; step++) {
-    for (let a = 0; a < nodes.length; a++) {
-      const A = nodes[a];
-      A.x += (W / 2 - A.x) * 0.009;
-      A.y += (H / 2 - A.y) * 0.009;
-      for (let b = 0; b < nodes.length; b++) {
-        if (a === b) continue;
-        const B = nodes[b];
-        const dx = A.x - B.x;
-        const dy = A.y - B.y;
-        const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const need = A.r + B.r + 5;
-        if (d < need) {
-          const push = ((need - d) / d) * 0.5;
-          A.x += dx * push; A.y += dy * push;
-          B.x -= dx * push; B.y -= dy * push;
+  for (let step = 0; step < 220; step += 1) {
+    nodes.forEach((node, index) => {
+      node.x += (node.targetX - node.x) * 0.025;
+      node.y += (node.targetY - node.y) * 0.025;
+
+      const centerDx = node.x - CX;
+      const centerDy = node.y - CY;
+      const centerDistance = Math.sqrt(centerDx ** 2 + centerDy ** 2) || 1;
+      const centerLimit = node.radius + 64;
+      if (centerDistance < centerLimit) {
+        const push = (centerLimit - centerDistance) / centerDistance;
+        node.x += centerDx * push;
+        node.y += centerDy * push;
+      }
+
+      for (let otherIndex = index + 1; otherIndex < nodes.length; otherIndex += 1) {
+        const other = nodes[otherIndex];
+        const dx = node.x - other.x;
+        const dy = node.y - other.y;
+        const distance = Math.sqrt(dx ** 2 + dy ** 2) || 0.01;
+        const needed = node.radius + other.radius + 7;
+        if (distance < needed) {
+          const push = ((needed - distance) / distance) * 0.52;
+          node.x += dx * push;
+          node.y += dy * push;
+          other.x -= dx * push;
+          other.y -= dy * push;
         }
       }
-      A.x = Math.max(A.r + 4, Math.min(W - A.r - 4, A.x));
-      A.y = Math.max(A.r + 4, Math.min(H - A.r - 4, A.y));
-    }
+
+      node.x = Math.max(node.radius + 14, Math.min(W - node.radius - 14, node.x));
+      node.y = Math.max(node.radius + 14, Math.min(H - node.radius - 14, node.y));
+    });
   }
   return nodes;
 }
 
+function HolderDetail({ node, compact = false }) {
+  if (!node) return null;
+  const holder = node.holder || node;
+  return (
+    <div className={compact ? "bubble-detail compact" : "bubble-detail"}>
+      <span className="lbl">{node.rank ? `Wallet #${node.rank}` : "Wallet"}</span>
+      <b>{short(holder.owner || holder.account)}</b>
+      <div><span>observed share</span><strong>{holder.share.toFixed(2)}%</strong></div>
+      <div><span>token accounts</span><strong>{holder.accounts || 1}</strong></div>
+      {holder.is_creator && <em>creator wallet</em>}
+    </div>
+  );
+}
+
 export default function BubbleMap({ data }) {
   const wrapRef = useRef(null);
-  const [tip, setTip] = useState(null);
+  const [hovered, setHovered] = useState(null);
+  const [selected, setSelected] = useState(null);
   const holders = data?.holders || [];
   const nodes = useMemo(() => layout(holders), [holders]);
+  const active = hovered || selected;
 
-  if (!holders.length) return <p className="note">No holder data for this coin.</p>;
-
-  function move(event, node) {
-    const box = wrapRef.current?.getBoundingClientRect();
-    if (!box) return;
-    setTip({ x: Math.min(box.width - 260, event.clientX - box.left + 12), y: event.clientY - box.top + 12, node });
-  }
+  if (!holders.length) return <p className="note">No holder data is available for this token.</p>;
 
   return (
-    <>
+    <div className="bubble-panel">
+      <div className="bubble-summary">
+        <div><span className="lbl">Observed wallets</span><b>{data.counted}</b></div>
+        <div><span className="lbl">Top 10 share</span><b>{data.top10_share.toFixed(1)}%</b></div>
+        <div><span className="lbl">Creator share</span><b className={data.creator_share > 5 ? "hi" : ""}>{data.creator_share.toFixed(1)}%</b></div>
+        <p>Area represents share of the observed holder set.</p>
+      </div>
+
       <div className="bmwrap" ref={wrapRef}>
-        <svg viewBox={`0 0 ${W} ${H}`} aria-label="Holder bubble map">
-          {nodes.map((N, i) => {
-            const colour = N.h.is_creator ? "#E8802A" : "#3A342E";
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Interactive holder concentration map">
+          <defs>
+            <pattern id="bubble-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#17130f" strokeWidth="1" />
+            </pattern>
+            <radialGradient id="holder-fill" cx="36%" cy="30%">
+              <stop offset="0" stopColor="#FFC46B" stopOpacity=".34" />
+              <stop offset=".42" stopColor="#E8802A" stopOpacity=".15" />
+              <stop offset="1" stopColor="#E8802A" stopOpacity=".04" />
+            </radialGradient>
+            <radialGradient id="creator-fill" cx="34%" cy="28%">
+              <stop offset="0" stopColor="#FFD694" stopOpacity=".72" />
+              <stop offset=".48" stopColor="#E8802A" stopOpacity=".32" />
+              <stop offset="1" stopColor="#6D3211" stopOpacity=".13" />
+            </radialGradient>
+            <filter id="bubble-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="5" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
+          </defs>
+
+          <rect width={W} height={H} fill="url(#bubble-grid)" opacity=".72" />
+          <circle className="orbit-ring" cx={CX} cy={CY} r="108" />
+          <circle className="orbit-ring second" cx={CX} cy={CY} r="194" />
+          <ellipse className="orbit-ring third" cx={CX} cy={CY} rx="304" ry="184" />
+
+          <g className="map-core" transform={`translate(${CX} ${CY})`}>
+            <circle r="48" />
+            <circle className="core-scan" r="58" />
+            <text y="-5">HOLDERS</text>
+            <text className="core-value" y="15">{data.counted} wallets</text>
+          </g>
+
+          {nodes.map((node, index) => {
+            const key = node.holder.owner || node.holder.account;
+            const isActive = active && (active.holder.owner || active.holder.account) === key;
+            const isDimmed = active && !isActive;
+            const showShare = node.radius >= 23;
             return (
-              <g key={i} className="bubble" onMouseMove={(e) => move(e, N.h)} onMouseLeave={() => setTip(null)}>
-                <circle
-                  cx={N.x.toFixed(1)} cy={N.y.toFixed(1)} r={N.r.toFixed(1)}
-                  fill={colour} fillOpacity="0.22" stroke={colour} strokeWidth="1.2"
-                />
-                {N.r > 15 && (
-                  <text x={N.x.toFixed(1)} y={(N.y + 3).toFixed(1)} textAnchor="middle" fontSize="9.5" fill={colour}>
-                    {N.h.share.toFixed(1)}
-                  </text>
-                )}
+              <g
+                key={key}
+                className={`bubble-node${node.holder.is_creator ? " creator" : ""}${isActive ? " active" : ""}${isDimmed ? " dimmed" : ""}`}
+                style={{ "--delay": `${Math.min(index * 22, 360)}ms` }}
+                transform={`translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})`}
+                tabIndex="0"
+                role="button"
+                aria-label={`Wallet rank ${node.rank}, ${node.holder.share.toFixed(2)} percent`}
+                onMouseEnter={() => setHovered(node)}
+                onMouseLeave={() => setHovered(null)}
+                onFocus={() => setHovered(node)}
+                onBlur={() => setHovered(null)}
+                onClick={() => setSelected(selected === node ? null : node)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelected(selected === node ? null : node);
+                  }
+                }}
+              >
+                <circle className="node-glow" r={(node.radius + 5).toFixed(1)} />
+                <circle className="node-main" r={node.radius.toFixed(1)} />
+                <text className="node-rank" y={showShare ? -3 : 3}>#{node.rank}</text>
+                {showShare && <text className="node-share" y="13">{node.holder.share.toFixed(1)}%</text>}
+                {node.holder.is_creator && <circle className="creator-mark" cx={node.radius * 0.68} cy={-node.radius * 0.68} r="4" />}
+                <title>{short(key)} / {node.holder.share.toFixed(2)}%{node.holder.is_creator ? " / creator" : ""}</title>
               </g>
             );
           })}
         </svg>
 
-        {tip && (
-          <div className="tip" style={{ left: tip.x, top: tip.y }}>
-            <b>{short(tip.node.owner || tip.node.account)}</b> · {tip.node.share.toFixed(2)}%
-            {tip.node.is_creator && <span className="cu"> · creator</span>}
-            {tip.node.accounts > 1 && <span> · {tip.node.accounts} accounts</span>}
-          </div>
-        )}
-
-        <div className="bmlegend">
-          {data.creator_share > 0 ? (
-            <span><i style={{ background: "#E8802A" }} />creator · {data.creator_share.toFixed(1)}%</span>
-          ) : (
-            <span><i style={{ background: "#3A342E" }} />creator not among the largest</span>
-          )}
-          <span><i style={{ background: "#3A342E" }} />other wallets</span>
-          {data.curve_share > 0 && <span>curve still holds {data.curve_share.toFixed(1)}%, excluded</span>}
-          <span style={{ marginLeft: "auto" }}>{data.counted} wallets from the 20 largest accounts</span>
-        </div>
+        {active && <HolderDetail node={active} compact />}
+        {selected && <button className="bubble-clear" onClick={() => setSelected(null)}>clear selection</button>}
       </div>
 
-      <p className="note">
-        Several token accounts owned by one wallet are drawn as one circle. No lines are drawn
-        between wallets: on this chain a funding relationship needs signature history per wallet,
-        and a line we have not verified would say more than we know. The creator's wallet is the
-        one relationship the data does give, and it is marked.
+      <div className="bmlegend">
+        <span><i className="legend-wallet" />wallet</span>
+        <span><i className="legend-creator" />creator</span>
+        {data.curve_share > 0 && <span>curve reserve excluded / {data.curve_share.toFixed(1)}%</span>}
+        <span className="legend-note">hover or select a circle to inspect</span>
+      </div>
+
+      <p className="note bubble-note">
+        The largest token accounts are resolved to their owning wallets, so several accounts held by
+        one wallet become one circle. No wallet-to-wallet links are implied without verified transfer history.
       </p>
-    </>
+    </div>
   );
 }

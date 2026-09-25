@@ -8,6 +8,7 @@ web/dist/
 
 .vercel
 .env*
+!.env.example
 
 # local agent tooling the Vercel CLI drops in; not part of the product
 .agents/

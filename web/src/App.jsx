@@ -3,22 +3,7 @@ import { fetchFeed, fetchHealth } from "./api.js";
 import Pulse from "./Pulse.jsx";
 import TokenPage from "./TokenPage.jsx";
 import Agent from "./Agent.jsx";
-
-const MARK = (
-  <svg width="22" height="22" viewBox="0 0 512 512" aria-hidden="true">
-    <defs>
-      <linearGradient id="cu" gradientUnits="userSpaceOnUse" x1="100" y1="80" x2="400" y2="440">
-        <stop offset="0" stopColor="#FFD694" />
-        <stop offset="0.4" stopColor="#FFC46B" />
-        <stop offset="1" stopColor="#E8802A" />
-      </linearGradient>
-    </defs>
-    <path d="M157 148 L285 256 L157 364" fill="none" stroke="url(#cu)" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" />
-    <rect x="329" y="188" width="56" height="176" rx="16" fill="url(#cu)" />
-    <circle cx="157" cy="148" r="15" fill="#160B03" />
-    <circle cx="157" cy="364" r="15" fill="#160B03" />
-  </svg>
-);
+import Header from "./Header.jsx";
 
 const FILTERS = [
   ["safe", "Authorities revoked"],
@@ -88,8 +73,11 @@ export default function App() {
 
   return (
     <div className="shell">
-      <div className="top">
-        <span className="brand">{MARK}<b>PIPE</b></span>
+      <Header end={
+        <button className="iconbtn" aria-pressed={agentOpen} onClick={() => setAgentOpen((v) => !v)}>
+          &gt;_ agent
+        </button>
+      }>
         <span className="grow" />
         <input
           ref={searchRef} className="srch" placeholder="ticker, name or mint   /"
@@ -100,10 +88,7 @@ export default function App() {
         {feed && !feed.holders_available && (
           <span className="chip warn" title="getTokenLargestAccounts needs a keyed RPC"><i />no holder key</span>
         )}
-        <button className="iconbtn" aria-pressed={agentOpen} onClick={() => setAgentOpen((v) => !v)}>
-          ›_ agent
-        </button>
-      </div>
+      </Header>
 
       <div className="sub">
         <span className="lbl">Filters</span>
@@ -120,7 +105,7 @@ export default function App() {
       <div className={`body${agentOpen ? " with-agent" : ""}`}>
         <div style={{ minWidth: 0, minHeight: 0 }}>
           {error && <div className="err">{error}</div>}
-          {!feed && !error && <div className="loading">reading pump.fun and the mint accounts</div>}
+          {!feed && !error && <div className="loading">reading launch activity and mint accounts</div>}
           {feed && !mint && (
             <Pulse columns={feed.columns} freshest={freshest} selected={mint}
               onOpen={setMint} filter={filter} />
@@ -134,9 +119,9 @@ export default function App() {
         <span>launches {health?.launches ?? "…"}</span>
         <span>rpc {health?.rpc ?? "…"}</span>
         <span>holders {health?.holders ?? "…"}</span>
-        <span>agent not connected</span>
+        <span>agent {health?.agent ?? "..."}</span>
         <span style={{ marginLeft: "auto" }}>
-          curve from pump.fun · authorities from the mint · price from dexscreener
+          launch activity / on-chain authorities / indexed market data
         </span>
       </div>
     </div>

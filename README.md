@@ -1,168 +1,158 @@
-# Pipe Terminal — Solana
+# PIPE Terminal
 
-A trading terminal for Solana: the launch feed straight off pump.fun, the two
-mint authorities that decide whether a coin can be turned against you, holder
-distribution and the bubble map, and a written read on every coin instead of a
-score out of a hundred.
+PIPE is a live Solana token terminal for launch discovery, market structure,
+authority checks, holder concentration, execution and grounded AI analysis.
 
-## Where the data comes from
+Production: https://pipe-ten-zeta.vercel.app/
 
-Three sources, each verified against live responses rather than assumed, and
-each doing the one thing it is best at.
+Product documentation is part of the site at `/docs`. The terminal header
+also contains the project token CA slot and the animated
+[@pipeterminal](https://x.com/pipeterminal) link.
 
-**pump.fun — `frontend-api-v3.pump.fun`** is the source of truth for existence.
-It gives the creator, the bonding curve account, the reserves and `complete`,
-which is the only authoritative answer to whether a coin has migrated.
+## Product principles
 
-> The older `frontend-api` host answers **530**. Only `frontend-api-v3` works,
-> and only with a browser-shaped `User-Agent`. A library default gets nothing.
+- Show verified facts, explicit flags and explicit unknowns.
+- Never convert unavailable data into a zero or a clean state.
+- Keep wallet signing in the wallet. The server only builds unsigned swaps.
+- Keep paid credentials server-side.
+- Present concentration honestly: the bubble map does not invent wallet links.
 
-> `complete=false` is a supported query parameter and it matters: sorting by
-> market cap without it returns a page that is almost entirely coins which
-> already migrated, and filtering afterwards leaves an empty column.
+## Architecture
 
-**The mint account** gives the two facts that matter most, and the public RPC
-serves them without a key:
-
-| | |
-|---|---|
-| `mintAuthority` | if set, more supply can be created at any moment |
-| `freezeAuthority` | if set, a balance can be frozen in the wallet holding it |
-
-**DexScreener — chain id `solana`** supplies price, liquidity, volume, buy and
-sell counts, and a second source for the image. No key, no auth. It knows
-nothing about a coin still on the curve, which is normal rather than an error.
-
-## The one thing that needs a key
-
-`getTokenLargestAccounts` is the holder call, and **no free Solana endpoint
-will serve it**. Measured, not assumed:
-
-| endpoint | answer |
-|---|---|
-| api.mainnet-beta.solana.com | 429 |
-| rpc.ankr.com/solana | 403 |
-| solana-rpc.publicnode.com | 403 |
-| solana.drpc.org | 400 |
-
-So holders and the bubble map are gated behind `HELIUS_API_KEY` or
-`SOLANA_RPC_URL`. Without one the terminal says so on the token page instead of
-drawing an empty chart that reads as "nobody holds this". Everything else —
-the feed, the curve, both authorities, price — works with no key at all.
-
-## What the bubble map does and does not claim
-
-Circles are wallets, area is share, and several token accounts owned by one
-wallet collapse into one circle. **No lines are drawn between wallets.** On an
-EVM chain the transfer log gives funding relationships for free; on Solana that
-needs signature history per wallet, which is a different order of cost, and a
-line we have not verified would say more than we know. The creator's wallet is
-the one relationship the data does give, and it is marked in copper.
-
-## The read
-
-Every other scanner prints a number out of a hundred. That hides the thing that
-matters: a coin with four verified facts and three unverifiable ones is not the
-same object as one with seven verified facts, and both come out as 72.
-
-So the read returns what was **checked**, what **failed**, and what **could not
-be checked at all** — named rather than folded into a guess. The paragraph is
-assembled from the same three lists, so it can never disagree with them.
-
-## Layout
-
-```
-api/index.py              Vercel entry: API, and web/dist for everything else
-pipe/config.py            endpoints, curve threshold, all env-overridable
-pipe/chain/rpc.py         Solana JSON-RPC; refuses the holder call loudly
-pipe/chain/pumpfun.py     the launch feed, curve progress, migration flag
-pipe/chain/spl.py         mint authorities and supply, one batch per page
-pipe/chain/holders.py     distribution from the twenty largest token accounts
-pipe/market/dexscreener.py price, liquidity, volume, images
-pipe/analysis/read.py     the read — three lists and a paragraph, no score
-pipe/db.py                Postgres: history, not the critical path
-pipe/indexer.py           writes what the feed showed so it stays findable
-pipe_api/dispatch.py      routes
-web/                      the terminal (Vite + React)
+```text
+api/index.py              Vercel entry: API plus built SPA fallback
+pipe_api/dispatch.py      API routing, envelopes and request limits
+pipe/analysis/agent.py    Fable 5.1 server-side analysis
+pipe/analysis/read.py     deterministic checked/flagged/unknown read
+pipe/chain/               Solana RPC, mint authorities and holder resolution
+pipe/market/              market data, candles and swap routing
+pipe/db.py                optional shared history/cache database
+web/src/App.jsx           terminal shell
+web/src/Agent.jsx         working Fable 5.1 agent dock
+web/src/BubbleMap.jsx     interactive holder concentration map
+web/src/Docs.jsx          public product manual at /docs
 ```
 
-## Endpoints
+Vercel builds the Vite frontend into `web/dist`. The Python function serves
+API routes and falls back to `index.html` for client routes such as
+`/docs`.
 
-| | |
-|---|---|
-| `GET /api/health` | slot, whether holders are available, whether a database is attached |
-| `GET /api/feed?limit=` | three columns: new, final stretch, migrated |
-| `GET /api/token/{mint}` | one coin, its authorities and its read |
-| `GET /api/token/{mint}/holders` | distribution for the bubble map — 409 without a key |
-| `GET /api/token/{mint}/candles?tf=` | OHLCV. `tf` is one of 1m, 5m, 15m, 1h, 4h, 1d |
-| `GET /api/wallet/{owner}?mint=` | SOL and token balance for the connected wallet |
-| `GET /api/tx/{signature}` | whether a swap confirmed, failed, or is still pending |
-| `POST /api/quote` | prices a route through Jupiter. `{side, mint, amount, slippage_bps}` |
-| `POST /api/swap` | builds an **unsigned** transaction. `{owner, quote}` |
-| `POST /api/index` | runs the indexer. Requires `Authorization: Bearer $CRON_SECRET` |
+## Fable 5.1
 
-## Running it
+The product-facing agent runtime is **Fable 5.1**. The implementation calls
+the OpenAI Responses API from the Python server with `gpt-6-astra` by default.
+
+The browser sends only a mint and a question. The server:
+
+1. validates and rate-limits the request;
+2. loads the token's verified market and authority facts;
+3. adds holder concentration when a keyed RPC is available;
+4. treats token metadata as untrusted data;
+5. requests a strict structured response;
+6. returns evidence, risks, unknowns and confidence.
+
+`OPENAI_API_KEY` is read only by the server. Never prefix it with `VITE_`
+and never commit it.
+
+## Bubble map
+
+The map reads the largest token accounts and resolves each token account to
+its owning wallet. Multiple token accounts owned by the same wallet collapse
+into one circle.
+
+- Circle area represents share of the observed holder set.
+- Creator ownership is highlighted in copper.
+- Hover, keyboard focus and selection reveal wallet details.
+- Top-ten and creator concentration remain visible above the map.
+- No wallet-to-wallet relationship is drawn without verified transfer history.
+
+Holder data requires `HELIUS_API_KEY` or `SOLANA_RPC_URL`. Without either,
+the terminal reports that the check is unavailable instead of drawing an
+empty map.
+
+## Local development
 
 ```bash
-pip install -r requirements.txt
-npm --prefix web install && npm --prefix web run build
+python -m pip install -r requirements.txt
+npm --prefix web install
+npm --prefix web run build
 python dev.py 8000
 ```
 
-That serves the API and the built frontend on one port, exactly as Vercel does.
+Open http://127.0.0.1:8000/. Documentation is at
+http://127.0.0.1:8000/docs.
+
+For frontend hot reload:
+
+```bash
+npm --prefix web run dev
+```
+
+Vite proxies `/api` according to `web/vite.config.js`.
 
 ## Environment
 
-| | |
-|---|---|
-| `HELIUS_API_KEY` | unlocks holders and the bubble map |
-| `SOLANA_RPC_URL` | a full RPC URL, if you would rather not use Helius |
-| `DATABASE_URL` | Vercel Postgres or Neon. Absent means live-only, no history — and a chart that says "stale" often |
-| `JUPITER_BASE` | overrides the swap router. The default lite host needs no key |
-| `CRON_SECRET` | required before `/api/index` will do anything |
-| `PUMPFUN_BASE` | overrides the launch feed host |
-| `PIPE_USER_AGENT` | what the feed sees. Must look like a browser |
+Copy `.env.example` into your local secret manager or configure the values
+directly in Vercel.
 
-## Why the database matters more than it looks
+| Variable | Scope | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | server only | Enables Fable 5.1 analysis |
+| `OPENAI_MODEL` | server only | Optional model override; defaults to `gpt-6-astra` |
+| `VITE_TOKEN_CA` | public build value | Project token contract address shown in the header |
+| `HELIUS_API_KEY` | server only | Enables holder resolution and bubble map |
+| `SOLANA_RPC_URL` | server only | Alternative keyed Solana RPC |
+| `DATABASE_URL` | server only | Shared candles/history across Vercel instances |
+| `CRON_SECRET` | server only | Protects the index cron endpoint |
+| `JUPITER_BASE` | server only | Optional swap router override |
 
-Everything on this terminal reads without a key except two calls, and one of
-them is the chart. GeckoTerminal is the only source that serves Solana OHLCV
-for free, and its free tier allows roughly **two calls before it blocks** —
-measured, not read off a docs page.
+The CA is intentionally rendered as `CA: TBA` until `VITE_TOKEN_CA` is
+set and a new frontend build is deployed.
 
-In one long-lived process an in-memory cache hides that completely. On Vercel
-it does not: each request may land on a different instance with its own empty
-memory, so the same pool is asked for again and again and the ceiling is hit
-almost immediately. With `DATABASE_URL` set, bars fetched by any instance are
-read by all of them and one row decides which single instance is allowed to go
-upstream at all — so a hundred readers cost one call between them.
+## API
 
-It is also where history comes from. One call returns a window; storing every
-window and merging them means the chart eventually reaches further back than
-any single call ever could.
+All routes use `{ ok, data, error }`.
 
-Without a database nothing breaks. The chart simply falls back to per-instance
-memory and marks itself stale more often, which it says on screen.
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/health` | RPC, holders, database and Fable 5.1 status |
+| GET | `/api/feed?limit=` | New, final-stretch and migrated launch activity |
+| GET | `/api/token/{mint}` | Token market state, authorities and deterministic read |
+| GET | `/api/token/{mint}/holders` | Holder distribution for table and bubble map |
+| GET | `/api/token/{mint}/candles?tf=` | OHLCV series |
+| GET | `/api/wallet/{owner}?mint=` | Connected wallet balances |
+| GET | `/api/tx/{signature}` | Submitted swap status |
+| POST | `/api/agent/analyze` | Grounded Fable 5.1 token analysis |
+| POST | `/api/quote` | Live swap route |
+| POST | `/api/swap` | Unsigned swap transaction |
+| POST | `/api/index` | Protected cron index |
 
-## Two things to know before deploying
+## Vercel deployment
 
-**The cron in `vercel.json` runs once a day, and that is a Hobby-plan limit
-rather than a choice.** A minute-level schedule does not get quietly reduced —
-Vercel refuses the deployment outright with "Hobby accounts are limited to
-daily cron jobs". On Pro, change the schedule to `* * * * *` and the indexer
-keeps the feed and the candles warm minute by minute.
+Set server secrets in Project Settings -> Environment Variables. The public
+`VITE_TOKEN_CA` value is compiled into the frontend and therefore requires
+a redeploy when changed.
 
-Little depends on it either way. The feed is live on every request, and the
-candle store fills from whoever opens a chart: the reader's own fetch is what
-gets written, and the cron only warms pools nobody has opened yet.
+The function timeout is 60 seconds. Fable 5.1 uses a 32-second upstream
+timeout so the API can still return a controlled JSON error before Vercel
+terminates the invocation.
 
-**Trading is wired, and your wallet is the only thing that signs.** The backend
-prices a route through Jupiter and builds an *unsigned* transaction; the
-browser hands it to Phantom, Solflare or Backpack, and the wallet both signs
-and sends it. No key is held anywhere in this product and the server has no way
-to submit what it built.
+Before production:
 
----
+1. rotate any API credential that has appeared in chat, logs or screenshots;
+2. set `OPENAI_API_KEY` and `HELIUS_API_KEY` for Production;
+3. set `VITE_TOKEN_CA` when the project token address is final;
+4. build and run the local server;
+5. verify `/`, `/docs`, agent requests and holder tabs;
+6. deploy only after the checks pass.
 
-The Robinhood Chain version of this terminal is in the history at commit
-`befacc6`, including its Pons log reader and the EVM holder replay.
+## Checks
+
+```bash
+python -m unittest discover -s tests
+npm --prefix web run build
+```
+
+The AI integration can be tested without spending API credit by mocking the
+Responses endpoint. A real live-model call should be a deliberate production
+smoke test, not part of an automatic build.

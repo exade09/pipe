@@ -1,45 +1,131 @@
-import { useEffect, useState } from "react";
-import { fetchToken, usd, age } from "./api.js";
-
-/*
-  The agent dock.
-
-  It is not connected yet, and this panel does not pretend otherwise — but it
-  is also not an empty box waiting for a backend. Everything it shows is real:
-  the read is already computed server-side from facts pulled off the mint, the
-  curve and the pool, so the dock surfaces it in the shape the agent will
-  eventually speak in.
-
-  What is honestly disabled is the part that needs a model: the free-form
-  question box. It is dimmed, it says why, and the suggested questions are
-  shown as what will be answerable rather than as working buttons. When the
-  model lands, the same panel gains a reply and nothing about its layout has
-  to move.
-*/
+import { useEffect, useRef, useState } from "react";
+import { age, fetchAgentAnalysis, fetchToken, usd } from "./api.js";
 
 const SUGGESTED = [
-  "who is holding this",
-  "has the creator sold",
-  "what happened in the last hour",
-  "compare this to the last coin i opened",
+  "summarize the main risks",
+  "what is verified on chain?",
+  "read the holder concentration",
+  "what changed in the last hour?",
 ];
+
+const AUTO_ANALYSES = new Map();
+
+function initialAnalysis(mint) {
+  if (!AUTO_ANALYSES.has(mint)) {
+    const request = fetchAgentAnalysis({
+      mint,
+      question: "Give me a concise evidence-based overview of this token.",
+    }).catch((error) => {
+      AUTO_ANALYSES.delete(mint);
+      throw error;
+    });
+    AUTO_ANALYSES.set(mint, request);
+  }
+  return AUTO_ANALYSES.get(mint);
+}
+
+function Analysis({ value }) {
+  if (!value) return null;
+  return (
+    <div className="msg">
+      <span className="who">&gt;_</span>
+      <div className="bubble-txt agent-read">
+        <div className="agent-answer-head">
+          <b>{value.headline}</b>
+          <span className={`confidence ${value.confidence}`}>{value.confidence}</span>
+        </div>
+        <p>{value.answer}</p>
+        {value.evidence?.length > 0 && (
+          <div className="agent-section">
+            <span className="lbl">Evidence</span>
+            <ul className="lst ok">{value.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>
+          </div>
+        )}
+        {value.risks?.length > 0 && (
+          <div className="agent-section">
+            <span className="lbl risk-label">Risks</span>
+            <ul className="lst bad">{value.risks.map((item, index) => <li key={index}>{item}</li>)}</ul>
+          </div>
+        )}
+        {value.unknowns?.length > 0 && (
+          <div className="agent-section">
+            <span className="lbl">Unknowns</span>
+            <ul className="lst unk">{value.unknowns.map((item, index) => <li key={index}>{item}</li>)}</ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function Agent({ mint, onClose }) {
   const [data, setData] = useState(null);
-  const [error, setError] = useState("");
+  const [tokenError, setTokenError] = useState("");
+  const [analysis, setAnalysis] = useState(null);
+  const [agentError, setAgentError] = useState("");
+  const [question, setQuestion] = useState("");
+  const [asked, setAsked] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
 
   useEffect(() => {
-    if (!mint) { setData(null); setError(""); return; }
+    if (!mint) {
+      setData(null);
+      setTokenError("");
+      setAnalysis(null);
+      setAgentError("");
+      setAsked("");
+      return undefined;
+    }
+    let active = true;
     const ctrl = new AbortController();
-    setData(null); setError("");
-    fetchToken(mint, ctrl.signal).then(setData).catch((e) => {
-      if (e.name !== "AbortError") setError(e.message);
+    setData(null);
+    setTokenError("");
+    setAnalysis(null);
+    setAgentError("");
+    setAsked("automatic token read");
+    setBusy(true);
+
+    fetchToken(mint, ctrl.signal).then((value) => {
+      if (active) setData(value);
+    }).catch((error) => {
+      if (active && error.name !== "AbortError") setTokenError(error.message);
     });
-    return () => ctrl.abort();
+
+    initialAnalysis(mint).then((value) => {
+      if (active) setAnalysis(value);
+    }).catch((error) => {
+      if (active) setAgentError(error.message);
+    }).finally(() => {
+      if (active) setBusy(false);
+    });
+
+    return () => {
+      active = false;
+      ctrl.abort();
+    };
   }, [mint]);
 
+  const ask = async (prompt) => {
+    const clean = (prompt || question).trim();
+    if (!mint || !clean || busy) return;
+    setBusy(true);
+    setAgentError("");
+    setAsked(clean);
+    try {
+      setAnalysis(await fetchAgentAnalysis({ mint, question: clean }));
+      setQuestion("");
+    } catch (error) {
+      setAgentError(error.message);
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  };
+
   const read = data?.read;
-  const t = data?.token;
+  const token = data?.token;
+  const state = busy ? "reading" : analysis ? "live" : agentError ? "offline" : "ready";
 
   return (
     <aside className="agent">
@@ -49,82 +135,65 @@ export default function Agent({ mint, onClose }) {
             strokeLinecap="round" strokeLinejoin="round" />
           <rect x="329" y="188" width="56" height="176" rx="16" fill="#E8802A" />
         </svg>
-        <b>Agent</b>
-        <span className="status"><i />not connected</span>
-        <button className="agent-close" onClick={onClose} aria-label="Close agent">×</button>
+        <span><b>Agent</b><small>Fable 5.1</small></span>
+        <span className={`status ${state}`}><i />{state}</span>
+        <button className="agent-close" onClick={onClose} aria-label="Close agent">x</button>
       </div>
 
-      <div className="agent-body">
+      <div className="agent-body" aria-live="polite">
         {!mint && (
-          <p className="agent-empty">
-            Open a coin and the read appears here. Once the model is connected this becomes a
-            conversation about whatever is on screen — for now it shows what has already been
-            worked out from the chain.
-          </p>
+          <div className="agent-empty">
+            <span className="agent-orbit" aria-hidden="true"><i /><i /><i /></span>
+            <b>Open a token to begin.</b>
+            <p>Fable 5.1 will analyze the verified market, authority and holder facts for the token on screen.</p>
+          </div>
         )}
 
-        {mint && error && <p className="err" style={{ padding: 0 }}>{error}</p>}
-        {mint && !data && !error && <p className="loading" style={{ padding: 0 }}>reading</p>}
+        {mint && tokenError && <p className="err agent-error">{tokenError}</p>}
+        {mint && busy && !analysis && (
+          <div className="agent-thinking"><span /><span /><span /> grounding the token read</div>
+        )}
+        {mint && asked && (analysis || agentError) && <p className="agent-question"><span>you</span>{asked}</p>}
+        {mint && agentError && <p className="agent-error-box">{agentError}</p>}
+        <Analysis value={analysis} />
 
-        {read && t && (
-          <>
-            <div className="msg">
-              <span className="who">›_</span>
-              <div className="bubble-txt">
-                <span className="lbl">{t.symbol} · {t.complete ? "migrated" : `${Math.round(t.progress * 100)}% of curve`} · {age(t.age_minutes)} old</span>
-                {read.verdict}
-              </div>
+        {read && token && (
+          <div className="msg system">
+            <span className="who">i</span>
+            <div className="bubble-txt">
+              <span className="lbl">Deterministic floor</span>
+              {token.symbol} / {token.complete ? "migrated" : `${Math.round(token.progress * 100)}% of curve`} / {age(token.age_minutes)} old.
+              Market cap {usd(token.fdv)}{token.indexed ? `, liquidity ${usd(token.liquidity_usd)}` : ", pool data unavailable"}.
+              {read.bad.length ? ` ${read.bad.length} verified flag(s).` : " No verified authority flags."}
             </div>
-
-            <div className="msg">
-              <span className="who">›_</span>
-              <div className="bubble-txt agent-facts">
-                <div>
-                  <span className="lbl">Checked</span>
-                  <ul className="lst ok">{read.ok.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
-                {read.bad.length > 0 && (
-                  <div>
-                    <span className="lbl" style={{ color: "#E05340" }}>Flags</span>
-                    <ul className="lst bad">{read.bad.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                  </div>
-                )}
-                <div>
-                  <span className="lbl">Could not check</span>
-                  <ul className="lst unk">{read.unk.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
-              </div>
-            </div>
-
-            <div className="msg system">
-              <span className="who" style={{ color: "#4A443E" }}>·</span>
-              <div className="bubble-txt">
-                Market cap {usd(t.fdv)}
-                {t.indexed ? `, liquidity ${usd(t.liquidity_usd)}` : ", no pool indexed yet"}.
-                Everything above is a fact with something behind it, which is the only
-                thing the model will be allowed to build on.
-              </div>
-            </div>
-          </>
+          </div>
         )}
       </div>
 
       <div className="agent-foot">
         <div className="asks">
-          {SUGGESTED.map((q) => (
-            <button key={q} className="ask" disabled title="Not connected yet">{q}</button>
+          {SUGGESTED.map((prompt) => (
+            <button key={prompt} className="ask" disabled={!mint || busy} onClick={() => ask(prompt)}>
+              {prompt}
+            </button>
           ))}
         </div>
-        <div className="agent-input">
-          <span className="cu">›</span>
-          <input placeholder="ask about this coin" disabled aria-label="Ask the agent" />
-          <span className="send">⏎</span>
-        </div>
-        <p className="agent-note">
-          The question box is disabled because no model is wired to it yet. The read above is
-          live, and when the model lands it answers out of exactly those facts — never around
-          them.
-        </p>
+        <form className="agent-input" onSubmit={(event) => { event.preventDefault(); ask(); }}>
+          <span className="cu">&gt;</span>
+          <input
+            ref={inputRef}
+            placeholder={mint ? "ask about this token" : "open a token first"}
+            value={question}
+            maxLength={500}
+            disabled={!mint || busy}
+            onChange={(event) => setQuestion(event.target.value)}
+            aria-label="Ask the Fable 5.1 agent"
+          />
+          <button className="send" disabled={!mint || !question.trim() || busy} aria-label="Send question">
+            {busy ? "..." : "enter"}
+          </button>
+        </form>
+        <p className="agent-note">Evidence-based analysis, not financial advice. Missing facts stay unknown.</p>
       </div>
     </aside>
   );
