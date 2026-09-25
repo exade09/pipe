@@ -148,7 +148,10 @@ def run_all() -> dict:
     market = refresh_market()
     # Whatever is left of the function's minute goes on candles, with a few
     # seconds held back so the response itself is never the thing that times out.
-    candle = refresh_candles(budget_seconds=max(0.0, 52.0 - (time.time() - started)))
+    # Measured on Vercel: coins and market take a few seconds, candles fill the
+    # rest, and the whole run came back at 54.9s against a 60s ceiling. Pulling
+    # the budget back to 45 leaves the response room to be written.
+    candle = refresh_candles(budget_seconds=max(0.0, 45.0 - (time.time() - started)))
     return {
         "ok": True,
         "seconds": round(time.time() - started, 2),

@@ -347,7 +347,15 @@ def health_route() -> dict:
         try:
             out["stored"] = db.stats()
         except Exception as exc:
-            out["database"] = f"configured but unreachable: {exc}"
+            # A fresh database has the credentials but not the tables, which is
+            # a different problem from one that cannot be reached and has a
+            # different fix: run the indexer once.
+            missing = "does not exist" in str(exc)
+            out["database"] = (
+                "configured, not migrated — POST /api/index once to create the schema"
+                if missing
+                else f"configured but unreachable: {exc}"
+            )
     client = RpcClient()
     try:
         out["slot"] = client.slot()
