@@ -403,6 +403,7 @@ tr:last-child td { border-bottom: 0; }
 .chart-svg .price-axis { font-size: 9.5px; }
 .chart-svg .volume-label { fill: #4f4942; font-size: 8px; letter-spacing: .12em; }
 .chart-svg .volume-rule { stroke: #242019; stroke-width: 1; }
+.chart-svg .quiet { stroke: #2a241e; stroke-width: 1.5; }
 .chart-svg .cndl.up .wick { stroke: var(--up); stroke-width: 1.25; }
 .chart-svg .cndl.down .wick { stroke: var(--down); stroke-width: 1.25; }
 .chart-svg .cndl.up .body { fill: var(--up); }

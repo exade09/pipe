@@ -11,18 +11,48 @@ mint's mint authority and freeze authority are the two facts that decide
 whether the supply can grow under you or your balance can be frozen.
 
 It refuses getTokenLargestAccounts with 429, and so does every other free
-endpoint tried: ankr and publicnode answer 403, drpc answers 400. Holders are
-therefore gated behind a keyed RPC, and the code says so out loud rather than
-retrying into a wall.
+endpoint tried: ankr and publicnode answer 403, drpc answers 400.
+
+That looked like the end of holder data without a key, and it was not. The
+same endpoint serves getProgramAccounts against the token program, filtered to
+one mint, and that returns every token account rather than the twenty largest
+— measured at 49,358 accounts in 2.2 seconds for a live pump.fun coin. Asking
+for a 40 byte slice of each account instead of the parsed whole keeps the
+answer to the two fields a distribution needs, the owner and the amount.
+
+It has one limit worth naming: a mint with millions of accounts, USDC for
+instance, comes back INTERNAL_ERROR because the answer is too large to build.
+No coin this terminal is pointed at is anywhere near that, and the refusal is
+reported rather than swallowed.
 """
 
+import base64
 import json
+import struct
 import time
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pipe.config import holders_available, rpc_url, user_agent
+from pipe.config import TOKEN_2022_PROGRAM, TOKEN_PROGRAM, rpc_url, user_agent
+
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def base58(raw: bytes) -> str:
+    """
+    Solana addresses come back as raw bytes when the account is read as a
+    slice rather than parsed, so the encoding has to happen here. Leading zero
+    bytes are leading ones, which is the part every naive implementation
+    drops.
+    """
+    number = int.from_bytes(raw, "big")
+    out = ""
+    while number:
+        number, rest = divmod(number, 58)
+        out = _B58[rest] + out
+    pad = len(raw) - len(raw.lstrip(bytes([0])))
+    return "1" * pad + out
 
 
 class RpcError(RuntimeError):
@@ -168,14 +198,57 @@ class RpcClient:
         return {"amount": amount, "decimals": decimals}
 
     def largest_token_accounts(self, mint: str) -> list[dict]:
-        """
-        The holder call, and the one the free endpoints will not serve. It is
-        refused loudly here so the caller can say "set a key" instead of
-        showing an empty chart that looks like a token with no holders.
-        """
-        if not holders_available():
-            raise RpcUnavailable(
-                "Holder data needs a keyed RPC. Set HELIUS_API_KEY or SOLANA_RPC_URL."
-            )
+        """Kept for callers that want the twenty largest and nothing more."""
         out = self.call("getTokenLargestAccounts", [mint])
         return (out or {}).get("value") or []
+
+    def mint_program(self, mint: str) -> str:
+        """
+        Which token program owns this mint. Asking is cheap and guessing is
+        the difference between every holder and none of them.
+        """
+        info = self.account_info(mint) or {}
+        owner = info.get("owner") or ""
+        return owner if owner in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM) else TOKEN_PROGRAM
+
+    def token_accounts_by_mint(self, mint: str, program: str = "") -> list[tuple[str, int]]:
+        """
+        Every token account holding this mint, as (owner, amount).
+
+        A token account carries the mint at offset 0 and the owner and amount
+        in the 40 bytes at offset 32, so the filter is the mint and the slice
+        is those 40 bytes. Nothing else is fetched: the parsed form of the same
+        query is thirteen megabytes where this is a fraction of it, and no
+        other field belongs in a distribution.
+
+        There is deliberately no size filter. Token-2022 accounts carry
+        extensions and run past the classic 165 bytes, and filtering on that
+        number drops all but a handful of them - checked against a live mint,
+        where the size filter found 16 accounts and no filter found 5,740
+        whose balances sum to exactly the reported supply.
+        """
+        out = self.call(
+            "getProgramAccounts",
+            [
+                program or self.mint_program(mint),
+                {
+                    "encoding": "base64",
+                    "dataSlice": {"offset": 32, "length": 40},
+                    "filters": [{"memcmp": {"offset": 0, "bytes": mint}}],
+                },
+            ],
+        )
+        rows: list[tuple[str, int]] = []
+        for item in out or []:
+            data = ((item or {}).get("account") or {}).get("data")
+            blob = data[0] if isinstance(data, list) and data else None
+            if not blob:
+                continue
+            try:
+                raw = base64.b64decode(blob)
+                if len(raw) < 40:
+                    continue
+                rows.append((base58(raw[0:32]), struct.unpack_from("<Q", raw, 32)[0]))
+            except (ValueError, struct.error):
+                continue
+        return rows

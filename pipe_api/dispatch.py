@@ -31,9 +31,9 @@ from pipe.chain import pumpfun
 from pipe.chain.holders import distribution
 from pipe.chain.rpc import RpcClient, RpcError, RpcUnavailable
 from pipe.chain.spl import mint_info_many
-from pipe.config import DEXSCREENER_CHAIN, LAMPORTS, WSOL_MINT, holders_available
+from pipe.config import DEXSCREENER_CHAIN, LAMPORTS, WSOL_MINT, keyed_rpc
 from pipe.market import jupiter
-from pipe.market.candles import TIMEFRAMES, CandlesUnavailable, series
+from pipe.market.candles import TIMEFRAMES, WINDOW_BARS, CandlesUnavailable, densify, series
 from pipe.market.curve_candles import series as curve_series
 from pipe.market.dexscreener import markets_for
 
@@ -128,7 +128,7 @@ def feed_route(query: dict) -> dict:
         return {
             "chain": "solana",
             "source": "live",
-            "holders_available": holders_available(),
+            "holders_available": True,
             "columns": {
                 "new": [rows[c.mint] for c in fresh if c.mint in rows],
                 "stretch": [rows[c.mint] for c in stretch if c.mint in rows],
@@ -139,9 +139,51 @@ def feed_route(query: dict) -> dict:
     return envelope(True, cached(f"feed:{limit}", 8.0, build))
 
 
+def _coin_off_chain(mint: str):
+    """
+    A coin pump.fun does not list, assembled from the chain and DexScreener.
+
+    pump.fun's index is the discovery feed, not the definition of what exists.
+    A mint it has never seen - one launched elsewhere, one it dropped, one too
+    new for its list - is still a real mint with a real authority pair and
+    often a real market, and refusing to open it was the terminal confusing
+    its feed with the chain.
+    """
+    supply = None
+    try:
+        supply = RpcClient().token_supply(mint)
+    except RpcError:
+        supply = None
+    market = markets_for([mint]).get(mint)
+    if not supply and not market:
+        return None
+
+    decimals = int((supply or {}).get("decimals") or 6)
+    total = int((supply or {}).get("amount") or 0)
+    created = market.created_at_ms if market else 0
+    return pumpfun.Coin(
+        mint=mint,
+        name=(market.base_name if market else "") or "",
+        symbol=(market.base_symbol if market else "") or (mint[:4] + "…"),
+        creator="",
+        created_ms=created,
+        complete=True,
+        image_uri=(market.image_url if market else "") or "",
+        market_cap_usd=(market.fdv or market.market_cap) if market else 0.0,
+        market_cap_sol=0.0,
+        real_sol=0.0,
+        total_supply=total,
+        decimals=decimals,
+        bonding_curve="",
+        pool_address=(market.pair_address if market else "") or "",
+        reply_count=0,
+        nsfw=False,
+    )
+
+
 def token_route(mint: str) -> dict:
     def build():
-        coin = pumpfun.one(mint)
+        coin = pumpfun.one(mint) or _coin_off_chain(mint)
         if not coin:
             return None
         rows = _enrich([coin])
@@ -152,7 +194,13 @@ def token_route(mint: str) -> dict:
 
     data = cached(f"token:{mint}", 10.0, build)
     if not data:
-        return envelope(False, error="Token not found in the live launch index.")
+        return envelope(
+            False,
+            error=(
+                "Nothing answers for this mint - pump.fun has not indexed it, the chain "
+                "reports no supply for it, and no market carries it."
+            ),
+        )
     return envelope(True, data)
 
 
@@ -191,18 +239,17 @@ def agent_route(body: dict, client_id: str = "") -> tuple[int, dict]:
         "deterministic_read": source.get("read") or {},
         "holder_distribution": {"available": False},
     }
-    if holders_available():
-        holder_payload = holders_route(mint)
-        if holder_payload["ok"]:
-            h = holder_payload["data"]
-            facts["holder_distribution"] = {
-                "available": True,
-                "wallets_counted": h.get("counted"),
-                "top10_share": h.get("top10_share"),
-                "creator_share": h.get("creator_share"),
-                "curve_share": h.get("curve_share"),
-                "truncated": h.get("truncated"),
-            }
+    holder_payload = holders_route(mint)
+    if holder_payload["ok"]:
+        h = holder_payload["data"]
+        facts["holder_distribution"] = {
+            "available": True,
+            "wallets_counted": h.get("counted"),
+            "top10_share": h.get("top10_share"),
+            "creator_share": h.get("creator_share"),
+            "curve_share": h.get("curve_share"),
+            "truncated": h.get("truncated"),
+        }
     try:
         return 200, envelope(True, agent_analyze(facts=facts, question=question))
     except AgentUnavailable as exc:
@@ -210,18 +257,8 @@ def agent_route(body: dict, client_id: str = "") -> tuple[int, dict]:
 
 
 def holders_route(mint: str) -> dict:
-    if not holders_available():
-        return envelope(
-            False,
-            error=(
-                "Holder data needs a keyed RPC. No free Solana endpoint serves "
-                "getTokenLargestAccounts — mainnet-beta answers 429, ankr and publicnode 403. "
-                "Set HELIUS_API_KEY or SOLANA_RPC_URL and this fills in."
-            ),
-        )
-
     def build():
-        coin = pumpfun.one(mint)
+        coin = pumpfun.one(mint) or _coin_off_chain(mint)
         if not coin:
             return None
         dist = distribution(
@@ -249,7 +286,7 @@ def holders_route(mint: str) -> dict:
     except RpcError as exc:
         return envelope(False, error=f"The RPC refused the holder call: {exc}")
     if not data:
-        return envelope(False, error="Coin not found.")
+        return envelope(False, error="Nothing answers for this mint, so there is nothing to count.")
     return envelope(True, data)
 
 
@@ -305,6 +342,26 @@ def candles_route(mint: str, query: dict) -> dict:
             data = series(mint, timeframe=timeframe, limit=limit, pool=pool)
     except CandlesUnavailable as exc:
         return envelope(False, error=str(exc))
+
+    # Sources only emit a bar where something traded. Left alone, a coin that
+    # traded twice in six months draws two candles side by side on a one
+    # minute chart, which is the picture the screenshot showed.
+    seconds = TIMEFRAMES[data.timeframe][2]
+    bars, real = densify(data.bars, seconds)
+    if real < 3:
+        span = (data.bars[-1]["t"] - data.bars[0]["t"]) if len(data.bars) > 1 else 0
+        better = next(
+            (name for name, (_, _, size) in TIMEFRAMES.items() if size * WINDOW_BARS >= span and size > seconds),
+            "1d",
+        )
+        return envelope(
+            False,
+            error=(
+                f"Only {real} bar{'' if real == 1 else 's'} traded inside the {data.timeframe} window. "
+                f"This pair is too quiet for that frame - try {better}."
+            ),
+        )
+
     return envelope(
         True,
         {
@@ -314,9 +371,10 @@ def candles_route(mint: str, query: dict) -> dict:
             "timeframe": data.timeframe,
             "timeframes": list(TIMEFRAMES),
             "stale": data.stale,
-            "source": getattr(data, "source", "DEX OHLCV"),
             "fetched_at": data.fetched_at,
-            "bars": data.bars,
+            "source": getattr(data, "source", "pool"),
+            "traded_bars": real,
+            "bars": bars,
         },
     )
 
@@ -423,7 +481,7 @@ def health_route() -> dict:
     out: dict[str, Any] = {
         "chain": "solana",
         "dexscreener": DEXSCREENER_CHAIN,
-        "holders": "available" if holders_available() else "needs a keyed rpc",
+        "holders": "keyed rpc" if keyed_rpc() else "keyless",
         "database": "configured" if db.configured() else "absent",
         "agent": "ready" if agent_configured() else "needs OPENAI_API_KEY",
         "agent_runtime": "Fable 5.1",

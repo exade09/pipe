@@ -51,6 +51,8 @@ class Market:
     websites: list[str] = None  # type: ignore[assignment]
     socials: list[str] = None  # type: ignore[assignment]
     quote_symbol: str = ""
+    base_symbol: str = ""
+    base_name: str = ""
 
     def __post_init__(self) -> None:
         if self.websites is None:
@@ -118,6 +120,8 @@ def _to_market(token: str, pair: dict) -> Market:
         websites=[w.get("url", "") for w in (info.get("websites") or []) if w.get("url")],
         socials=[s.get("url", "") for s in (info.get("socials") or []) if s.get("url")],
         quote_symbol=(pair.get("quoteToken") or {}).get("symbol", ""),
+        base_symbol=(pair.get("baseToken") or {}).get("symbol", ""),
+        base_name=(pair.get("baseToken") or {}).get("name", ""),
     )
 
 

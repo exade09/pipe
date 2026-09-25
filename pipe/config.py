@@ -62,6 +62,12 @@ SAFE_AUTHORITY = None
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
+# Newer pump.fun coins are minted under Token-2022 rather than the original
+# token program, and a holder query aimed at the wrong one comes back empty
+# rather than wrong, which is the kind of bug that looks like "no holders".
+# The mint account names its own program, so it is read rather than guessed.
+TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -83,7 +89,12 @@ def rpc_url() -> str:
     return DEFAULT_RPC
 
 
-def holders_available() -> bool:
+def keyed_rpc() -> bool:
+    """
+    Whether a paid endpoint is configured. Nothing is gated behind it any more
+    — holders are read with getProgramAccounts, which the public endpoint
+    serves — so this only reports which endpoint the terminal is using.
+    """
     return bool((os.getenv("SOLANA_RPC_URL") or os.getenv("HELIUS_API_KEY") or "").strip())
 
 

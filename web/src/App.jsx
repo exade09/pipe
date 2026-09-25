@@ -85,9 +85,6 @@ export default function App() {
         />
         <span className="chip"><i />solana</span>
         <span className="chip"><i />slot {health?.slot ?? "…"}</span>
-        {feed && !feed.holders_available && (
-          <span className="chip warn" title="getTokenLargestAccounts needs a keyed RPC"><i />no holder key</span>
-        )}
       </Header>
 
       <div className="sub">

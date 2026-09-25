@@ -302,6 +302,47 @@ def _fetch(pool: str, source: str, limit: int) -> tuple[list[dict], float, bool]
     return [], 0.0, False
 
 
+# How many buckets a timeframe shows. One number for every frame, so 1m is the
+# last three hours and 1d is the last six months, and no frame is ever asked to
+# draw a year of silence.
+WINDOW_BARS = 180
+
+
+def densify(bars: list[dict], seconds: int, window: int = WINDOW_BARS) -> tuple[list[dict], int]:
+    """
+    A continuous run of buckets ending at the newest bar.
+
+    OHLCV sources only emit a bar where something traded. Drawing those side by
+    side puts a bar from March next to a bar from today and labels the gap as
+    one minute, which is how a quiet coin ends up looking like a chart of five
+    enormous candles. So the run is clamped to the last `window` buckets and
+    every empty bucket inside it is filled with a flat bar at the previous
+    close, carrying no volume and marked `f` so the chart can draw it as the
+    nothing that it is.
+
+    Returns the bars and how many of them were real trades.
+    """
+    if not bars:
+        return [], 0
+    ordered = sorted(bars, key=lambda b: b["t"])
+    end = ordered[-1]["t"] - (ordered[-1]["t"] % seconds)
+    start = end - seconds * (window - 1)
+    real = {bar["t"] - (bar["t"] % seconds): bar for bar in ordered if bar["t"] >= start}
+    if not real:
+        return [], 0
+
+    out: list[dict] = []
+    close = real[min(real)]["o"]
+    for stamp in range(min(real), end + seconds, seconds):
+        hit = real.get(stamp)
+        if hit:
+            out.append(dict(hit, t=stamp))
+            close = hit["c"]
+        else:
+            out.append({"t": stamp, "o": close, "h": close, "l": close, "c": close, "v": 0.0, "f": True})
+    return out, len(real)
+
+
 def series(mint: str, timeframe: str = "5m", limit: int = 300, pool: str = "") -> Series:
     if timeframe not in TIMEFRAMES:
         timeframe = "5m"

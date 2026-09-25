@@ -201,6 +201,20 @@ export default function Chart({ mint, symbol }) {
 
             {view.shown.map((bar, i) => {
               const width = Math.max(3, Math.min(12, view.step * 0.58));
+
+              // A bucket where nothing traded. It is carried at the last close
+              // so the run stays continuous, and drawn as the flat nothing it
+              // is rather than as a candle that never happened.
+              if (bar.f) {
+                return (
+                  <line
+                    key={bar.t} className="quiet"
+                    x1={view.x(i) - width / 2} x2={view.x(i) + width / 2}
+                    y1={view.y(bar.c)} y2={view.y(bar.c)}
+                  />
+                );
+              }
+
               const volumeHeight = (bar.v / view.volMax) * (VOL_H - 25);
               const bodyTop = view.y(Math.max(bar.o, bar.c));
               const bodyHeight = Math.max(2, Math.abs(view.y(bar.o) - view.y(bar.c)));
@@ -238,7 +252,7 @@ export default function Chart({ mint, symbol }) {
       {data && (
         <div className="chart-foot">
           <span><i className="source-dot" />{venue}</span>
-          <span>{view?.shown.length || 0} / {data.bars.length} bars visible</span>
+          <span>{data.traded_bars ?? 0} traded of {view?.shown.length || 0} bars</span>
           <span className="grow" />
           <span>{source} / {frame} / refresh 20s</span>
         </div>
