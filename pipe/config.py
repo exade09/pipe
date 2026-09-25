@@ -39,6 +39,22 @@ LAMPORTS = 1_000_000_000
 DEXSCREENER_BASE = "https://api.dexscreener.com"
 DEXSCREENER_CHAIN = "solana"
 
+# The only Solana OHLCV anyone serves without a key. Its free tier is thin —
+# measured at roughly two calls before a Cloudflare 403 — so everything the
+# terminal draws from it is cached and the last good answer is kept.
+GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2"
+GECKOTERMINAL_NETWORK = "solana"
+
+# Jupiter routes the swap. The lite host needs no key and quotes pump.fun's
+# own AMM alongside Raydium, Orca and the rest, which is what makes one panel
+# able to trade a coin on the curve and the same coin after it migrates.
+JUPITER_BASE = "https://lite-api.jup.ag/swap/v1"
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+
+# What a swap may cost in fees before the panel refuses to build it, and the
+# ceiling on the priority fee it asks Jupiter to attach.
+MAX_PRIORITY_LAMPORTS = 3_000_000
+
 # The two accounts that make a mint dangerous, and the values that make it
 # safe. Both are read straight off the mint account.
 SAFE_AUTHORITY = None
@@ -82,6 +98,10 @@ def database_url() -> str:
         if value:
             return value
     return ""
+
+
+def jupiter_base() -> str:
+    return (os.getenv("JUPITER_BASE") or JUPITER_BASE).strip().rstrip("/") or JUPITER_BASE
 
 
 def user_agent() -> str:

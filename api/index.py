@@ -74,8 +74,21 @@ class handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         want = (os.getenv("CRON_SECRET") or "").strip()
         got = (self.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+        body: dict = {}
         try:
-            routed = handle_post(parsed.path, bool(want) and got == want)
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= 2_000_000:
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+            except (ValueError, UnicodeDecodeError):
+                _send(self, 400, {"ok": False, "data": None, "error": "Body was not JSON."})
+                return
+            if not isinstance(body, dict):
+                body = {}
+        try:
+            routed = handle_post(parsed.path, bool(want) and got == want, body)
         except Exception as exc:
             _send(self, 502, {"ok": False, "data": None, "error": f"{type(exc).__name__}: {exc}"})
             return

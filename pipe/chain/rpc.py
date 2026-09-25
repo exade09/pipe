@@ -138,6 +138,35 @@ class RpcClient:
         out = self.call("getTokenSupply", [mint])
         return (out or {}).get("value")
 
+    def sol_balance(self, owner: str) -> int:
+        out = self.call("getBalance", [owner])
+        return int((out or {}).get("value") or 0)
+
+    def token_balance(self, owner: str, mint: str) -> dict:
+        """
+        What the wallet holds of one mint. getTokenAccountsByOwner is served by
+        the public endpoint, unlike the holder call, because it is scoped to a
+        single owner rather than to the whole mint.
+
+        A wallet can hold the same mint in more than one account, so the
+        balances are summed rather than the first one taken.
+        """
+        out = self.call(
+            "getTokenAccountsByOwner",
+            [owner, {"mint": mint}, {"encoding": "jsonParsed"}],
+        )
+        amount = 0
+        decimals = 0
+        for item in ((out or {}).get("value") or []):
+            info = (((item.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
+            token = info.get("tokenAmount") or {}
+            try:
+                amount += int(token.get("amount") or 0)
+                decimals = int(token.get("decimals") or decimals)
+            except (TypeError, ValueError):
+                continue
+        return {"amount": amount, "decimals": decimals}
+
     def largest_token_accounts(self, mint: str) -> list[dict]:
         """
         The holder call, and the one the free endpoints will not serve. It is

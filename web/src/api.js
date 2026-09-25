@@ -22,6 +22,70 @@ export const fetchHealth = (signal) => get("/api/health", signal);
 export const fetchFeed = ({ limit = 40 } = {}, signal) => get(`/api/feed?limit=${limit}`, signal);
 export const fetchToken = (mint, signal) => get(`/api/token/${mint}`, signal);
 export const fetchHolders = (mint, signal) => get(`/api/token/${mint}/holders`, signal);
+export const fetchCandles = (mint, tf, signal) =>
+  get(`/api/token/${mint}/candles?tf=${encodeURIComponent(tf)}&limit=300`, signal);
+export const fetchWallet = (owner, mint, signal) =>
+  get(`/api/wallet/${owner}?mint=${encodeURIComponent(mint || "")}`, signal);
+export const fetchTx = (signature, signal) => get(`/api/tx/${signature}`, signal);
+
+async function post(path, body, signal) {
+  const response = await fetch(path, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`${path} returned ${response.status} and no JSON`);
+  }
+  if (!payload.ok) throw new Error(payload.error || `${path} failed`);
+  return payload.data;
+}
+
+export const fetchQuote = (body, signal) => post("/api/quote", body, signal);
+export const buildSwap = (body, signal) => post("/api/swap", body, signal);
+
+/* ----------------------------------------------------------- amounts */
+
+export const LAMPORTS = 1e9;
+
+/*
+  Token amounts arrive as integers in base units and are shown as decimals.
+  Both directions are here so no component invents its own rounding — a swap
+  built from a number that was displayed rather than held is a swap for the
+  wrong size.
+*/
+export function toBase(amount, decimals) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n * 10 ** decimals);
+}
+
+export function fromBase(amount, decimals) {
+  return (Number(amount) || 0) / 10 ** decimals;
+}
+
+/* Meme supplies are large and prices are small, so both need their own scale. */
+export function amountText(value) {
+  const n = Number(value) || 0;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}b`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}m`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)}k`;
+  if (n >= 1) return n.toFixed(3);
+  if (n > 0) return n.toFixed(6);
+  return "0";
+}
+
+export function priceText(value) {
+  const n = Number(value) || 0;
+  if (n === 0) return "$0";
+  if (n >= 1) return `$${n.toFixed(4)}`;
+  const digits = Math.min(12, Math.max(4, Math.ceil(-Math.log10(n)) + 3));
+  return `$${n.toFixed(digits)}`;
+}
 
 /* ------------------------------------------------------------ formatting */
 

@@ -353,7 +353,121 @@ tr:last-child td { border-bottom: 0; }
   background: transparent; color: var(--dimmer);
   border: 1px dashed var(--line2); border-radius: var(--r);
 }
-.fine { font-size: 10px; color: var(--dimmer); margin-top: 9px; text-align: center; line-height: 1.6; }
+.fine { font-size: 10px; color: var(--dimmer); margin: 0; text-align: center; line-height: 1.6; }
+.fine a { text-decoration: underline; }
+
+/* ---------------------------------------------------------- chart */
+
+.chart { display: flex; flex-direction: column; gap: 0; }
+.chart-head {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 0 0 11px; font-size: 11px; color: var(--dim);
+}
+.frames { display: flex; gap: 3px; }
+.fr {
+  font-size: 11px; cursor: pointer; background: var(--raised);
+  border: 1px solid var(--line); border-radius: var(--r); color: var(--dim);
+  padding: 4px 9px; transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.fr:hover { color: var(--type); border-color: var(--line2); }
+.fr[aria-pressed="true"] { color: #000; background: var(--copper); border-color: var(--copper); }
+
+/* O H L C V of whatever bar the pointer is over, or the last one */
+.ohlc { display: flex; gap: 11px; font-size: 10.5px; color: var(--dimmer); flex-wrap: wrap; }
+.ohlc b { color: var(--type); font-weight: 400; }
+
+.chart-svg {
+  display: block; width: 100%; height: 340px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+}
+.chart-svg .grid { stroke: #16130f; stroke-width: 1; }
+.chart-svg .axis { fill: var(--dimmer); font-size: 9px; font-family: inherit; }
+.chart-svg .axis.mid { text-anchor: middle; }
+.chart-svg .cndl.up .wick { stroke: var(--up); stroke-width: 1; }
+.chart-svg .cndl.down .wick { stroke: var(--down); stroke-width: 1; }
+.chart-svg .cndl.up .body { fill: var(--up); }
+.chart-svg .cndl.down .body { fill: var(--down); }
+.chart-svg .cndl.up .vol { fill: var(--up); opacity: .26; }
+.chart-svg .cndl.down .vol { fill: var(--down); opacity: .26; }
+.chart-svg .lastline { stroke: var(--copper); stroke-width: 1; stroke-dasharray: 3 3; opacity: .7; }
+.chart-svg .lastbox { fill: var(--copper); rx: 2; }
+.chart-svg .lasttext { fill: #000; font-size: 9px; font-family: inherit; }
+.chart-svg .cross { stroke: var(--line2); stroke-width: 1; }
+
+.chart-msg {
+  border: 1px dashed var(--line2); border-radius: var(--r);
+  padding: 34px 16px; text-align: center; color: var(--dim); font-size: 12px; margin: 0;
+}
+.chart-foot {
+  display: flex; gap: 12px; padding: 9px 2px 0; font-size: 10px; color: var(--dimmer);
+  flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------- order panel */
+
+.trade { display: flex; flex-direction: column; gap: 10px; margin-top: 9px; }
+
+/* buy and sell are the one place in this product where green and red are a
+   choice rather than a report, so they only colour the side that is chosen */
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.sd {
+  font-size: 12px; letter-spacing: .06em; cursor: pointer; padding: 8px 0;
+  background: var(--raised); color: var(--dim);
+  border: 1px solid var(--line); border-radius: var(--r);
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.sd:hover { color: var(--type); }
+.sd.buy[aria-pressed="true"] { color: #04140c; background: var(--up); border-color: var(--up); }
+.sd.sell[aria-pressed="true"] { color: #170706; background: var(--down); border-color: var(--down); }
+
+.fld { display: flex; flex-direction: column; gap: 5px; }
+.amt {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--raised); padding: 9px 11px;
+  transition: border-color .12s ease;
+}
+.amt:focus-within { border-color: var(--copper); }
+.amt input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+  color: var(--type); font: inherit; font-size: 15px;
+}
+.amt .unit { font-size: 10.5px; color: var(--dimmer); flex: none; }
+
+.slip { display: flex; align-items: center; gap: 5px; }
+.slip .lbl { margin-right: auto; }
+.slip button {
+  font-size: 10.5px; cursor: pointer; background: transparent; color: var(--dim);
+  border: 1px solid var(--line); border-radius: var(--r); padding: 3px 7px;
+}
+.slip button[aria-pressed="true"] { color: #000; background: var(--copper); border-color: var(--copper); }
+
+/* the three numbers that have to be on screen before the button can be used */
+.quote {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--raised);
+  padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-height: 42px;
+}
+.qrow { display: flex; align-items: baseline; gap: 10px; font-size: 11px; color: var(--dim); }
+.qrow b { margin-left: auto; color: var(--type); font-weight: 400; text-align: right; }
+
+.bal { display: flex; gap: 10px; font-size: 10.5px; color: var(--dimmer); }
+
+.exec {
+  width: 100%; text-align: center; padding: 11px 0; font-size: 12.5px;
+  letter-spacing: .08em; cursor: pointer;
+  background: var(--copper); color: #000; border: 1px solid var(--copper); border-radius: var(--r);
+  transition: filter .12s ease;
+}
+.exec:hover:not(:disabled) { filter: brightness(1.1); }
+.exec:disabled { cursor: not-allowed; background: transparent; color: var(--dimmer); border-color: var(--line2); }
+.connect { display: flex; flex-direction: column; gap: 6px; }
+
+.unlink {
+  background: transparent; border: 0; color: var(--dimmer); font: inherit; font-size: 10px;
+  cursor: pointer; padding: 0; text-align: center;
+}
+.unlink:hover { color: var(--type); }
+
+.mkt { border-top: 1px solid var(--line); padding-top: 10px; }
 
 /* ---------------------------------------------------------- agent dock */
 

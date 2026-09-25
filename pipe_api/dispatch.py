@@ -18,6 +18,7 @@ one no free endpoint will serve, so it happens on the token page and only when
 a keyed endpoint is configured.
 """
 
+import json
 import time
 from dataclasses import asdict
 from typing import Any
@@ -28,7 +29,9 @@ from pipe.chain import pumpfun
 from pipe.chain.holders import distribution
 from pipe.chain.rpc import RpcClient, RpcError, RpcUnavailable
 from pipe.chain.spl import mint_info_many
-from pipe.config import DEXSCREENER_CHAIN, holders_available
+from pipe.config import DEXSCREENER_CHAIN, LAMPORTS, WSOL_MINT, holders_available
+from pipe.market import jupiter
+from pipe.market.candles import TIMEFRAMES, CandlesUnavailable, series
 from pipe.market.dexscreener import markets_for
 
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -193,6 +196,143 @@ def holders_route(mint: str) -> dict:
     return envelope(True, data)
 
 
+def candles_route(mint: str, query: dict) -> dict:
+    """
+    OHLCV for the deepest pool that has indexed the coin. A refusal comes back
+    as a refusal — an empty chart and a flat line are the same picture, and one
+    of them is a lie.
+    """
+    timeframe = (query.get("tf", ["5m"])[0] or "5m").strip()
+    pool = (query.get("pool", [""])[0] or "").strip()
+    if not pool:
+        # DexScreener already knows the deepest pair and answers generously.
+        # GeckoTerminal does not, so its budget goes entirely on the candles.
+        found = cached(f"pair:{mint}", 120.0, lambda: markets_for([mint]).get(mint))
+        pool = getattr(found, "pair_address", "") or ""
+        known_dex = getattr(found, "dex", "") or ""
+    else:
+        known_dex = ""
+    try:
+        limit = max(30, min(int(query.get("limit", ["300"])[0]), 1000))
+    except (TypeError, ValueError):
+        limit = 300
+    try:
+        data = series(mint, timeframe=timeframe, limit=limit, pool=pool)
+    except CandlesUnavailable as exc:
+        return envelope(False, error=str(exc))
+    return envelope(
+        True,
+        {
+            "mint": mint,
+            "pool": data.pool,
+            "dex": data.dex or known_dex,
+            "timeframe": data.timeframe,
+            "timeframes": list(TIMEFRAMES),
+            "stale": data.stale,
+            "fetched_at": data.fetched_at,
+            "bars": data.bars,
+        },
+    )
+
+
+def wallet_route(owner: str, query: dict) -> dict:
+    """What the connected wallet can actually spend, before it is offered a trade."""
+    mint = (query.get("mint", [""])[0] or "").strip()
+
+    def build():
+        client = RpcClient()
+        out = {"owner": owner, "lamports": client.sol_balance(owner), "sol": 0.0}
+        out["sol"] = out["lamports"] / LAMPORTS
+        if mint and mint != WSOL_MINT:
+            held = client.token_balance(owner, mint)
+            out["token"] = held
+            out["token_ui"] = held["amount"] / (10 ** held["decimals"]) if held["decimals"] else 0.0
+        return out
+
+    try:
+        return envelope(True, cached(f"wallet:{owner}:{mint}", 8.0, build))
+    except RpcError as exc:
+        return envelope(False, error=f"The RPC would not read that wallet: {exc}")
+
+
+def quote_route(body: dict) -> tuple[int, dict]:
+    side = (body.get("side") or "buy").lower()
+    mint = (body.get("mint") or "").strip()
+    if not mint:
+        return 400, envelope(False, error="No mint.")
+    try:
+        amount = int(body.get("amount") or 0)
+    except (TypeError, ValueError):
+        return 400, envelope(False, error="Amount must be a whole number of base units.")
+    slippage = int(body.get("slippage_bps") or 150)
+    input_mint, output_mint = (WSOL_MINT, mint) if side == "buy" else (mint, WSOL_MINT)
+    try:
+        q = jupiter.quote(input_mint, output_mint, amount, slippage)
+    except jupiter.JupiterError as exc:
+        return 200, envelope(False, error=str(exc))
+    return 200, envelope(
+        True,
+        {
+            "side": side,
+            "input_mint": q.input_mint,
+            "output_mint": q.output_mint,
+            "in_amount": q.in_amount,
+            "out_amount": q.out_amount,
+            "min_out_amount": q.min_out_amount,
+            "price_impact_pct": q.price_impact_pct,
+            "slippage_bps": q.slippage_bps,
+            "route": q.route,
+            "quote": q.raw,
+        },
+    )
+
+
+def swap_route(body: dict) -> tuple[int, dict]:
+    """
+    Builds the transaction and hands it back unsigned. The wallet in the
+    reader's browser is the only thing that signs it and the only thing that
+    sends it; nothing on this side can.
+    """
+    owner = (body.get("owner") or "").strip()
+    raw = body.get("quote")
+    if not owner or not isinstance(raw, dict):
+        return 400, envelope(False, error="A swap needs a wallet address and the quote it was priced from.")
+    try:
+        priority = int(body.get("priority_lamports") or 1_000_000)
+    except (TypeError, ValueError):
+        priority = 1_000_000
+    try:
+        return 200, envelope(True, jupiter.swap_transaction(raw, owner, priority))
+    except jupiter.JupiterError as exc:
+        return 200, envelope(False, error=str(exc))
+
+
+def tx_route(signature: str) -> dict:
+    """
+    Whether the swap landed. The wallet returns a signature the instant it
+    sends, which is not the same as the trade having happened, and a panel
+    that stops at "sent" is telling the reader something it does not know.
+    """
+    def build():
+        client = RpcClient()
+        out = client.call("getSignatureStatuses", [[signature], {"searchTransactionHistory": True}])
+        value = ((out or {}).get("value") or [None])[0]
+        if not value:
+            return {"signature": signature, "status": "pending", "confirmations": None, "error": None}
+        return {
+            "signature": signature,
+            "status": "failed" if value.get("err") else (value.get("confirmationStatus") or "processed"),
+            "confirmations": value.get("confirmations"),
+            "slot": value.get("slot"),
+            "error": json.dumps(value.get("err")) if value.get("err") else None,
+        }
+
+    try:
+        return envelope(True, cached(f"tx:{signature}", 2.0, build))
+    except RpcError as exc:
+        return envelope(False, error=f"Could not read the transaction status: {exc}")
+
+
 def health_route() -> dict:
     out: dict[str, Any] = {
         "chain": "solana",
@@ -215,8 +355,21 @@ def handle_get(path: str, query: dict) -> tuple[int, dict] | None:
         return 200, health_route()
     if path == "/api/feed":
         return 200, feed_route(query)
+    if path.startswith("/api/tx/"):
+        signature = path[len("/api/tx/"):].strip("/")
+        if signature:
+            payload = tx_route(signature)
+            return (200 if payload["ok"] else 409), payload
+    if path.startswith("/api/wallet/"):
+        owner = path[len("/api/wallet/"):].strip("/")
+        if owner:
+            payload = wallet_route(owner, query)
+            return (200 if payload["ok"] else 409), payload
     if path.startswith("/api/token/"):
         rest = path[len("/api/token/"):].strip("/")
+        if rest.endswith("/candles"):
+            payload = candles_route(rest[: -len("/candles")], query)
+            return (200 if payload["ok"] else 409), payload
         if rest.endswith("/holders"):
             payload = holders_route(rest[: -len("/holders")])
             return (200 if payload["ok"] else 409), payload
@@ -226,7 +379,11 @@ def handle_get(path: str, query: dict) -> tuple[int, dict] | None:
     return None
 
 
-def handle_post(path: str, secret_ok: bool) -> tuple[int, dict] | None:
+def handle_post(path: str, secret_ok: bool, body: dict | None = None) -> tuple[int, dict] | None:
+    if path == "/api/quote":
+        return quote_route(body or {})
+    if path == "/api/swap":
+        return swap_route(body or {})
     if path == "/api/index":
         if not secret_ok:
             return 401, envelope(False, error="Missing or wrong CRON_SECRET.")

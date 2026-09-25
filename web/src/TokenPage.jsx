@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { fetchToken, fetchHolders, usd, age, short } from "./api.js";
 import Avatar from "./Avatar.jsx";
 import BubbleMap from "./BubbleMap.jsx";
+import Chart from "./Chart.jsx";
+import Trade from "./Trade.jsx";
 
 const TABS = [
+  ["chart", "Chart"],
   ["read", "The read"],
   ["holders", "Holders"],
   ["bubble", "Bubble map"],
@@ -19,7 +22,7 @@ export default function TokenPage({ mint, onBack }) {
   const [data, setData] = useState(null);
   const [holders, setHolders] = useState(null);
   const [holdersError, setHoldersError] = useState("");
-  const [tab, setTab] = useState("read");
+  const [tab, setTab] = useState("chart");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
@@ -100,6 +103,8 @@ export default function TokenPage({ mint, onBack }) {
         </div>
 
         <div className="pane">
+          {tab === "chart" && <Chart mint={t.mint} symbol={t.symbol} />}
+
           {tab === "read" && (
             <>
               <p className="lbl">The read · assembled from the facts below, never from a score</p>
@@ -205,16 +210,7 @@ export default function TokenPage({ mint, onBack }) {
       <aside className="rail">
         <div className="blk">
           <span className="lbl">Order</span>
-          <div className="presets" style={{ marginTop: 8 }}>
-            <button aria-pressed="false" disabled>0.1</button>
-            <button aria-pressed="true" disabled>0.5</button>
-            <button aria-pressed="false" disabled>1.0</button>
-          </div>
-          <button className="go" disabled>Trading not wired yet</button>
-          <p className="fine">
-            Reads are live. Signing is not connected — no wallet, no approvals, nothing can leave
-            an account from this screen.
-          </p>
+          <Trade token={t} />
         </div>
 
         <div className="blk">
