@@ -19,6 +19,18 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web" / "dist"
 
 
+def holding() -> bool:
+    """
+    Whether the front door is the holding page instead of the terminal.
+
+    It is a switch rather than a removal: SITE_MODE=soon puts SOON in front of
+    every page, and unsetting it brings the terminal back with nothing to
+    rebuild. The API keeps answering underneath either way, so the cron, the
+    database and anything already pointed at a route carry on.
+    """
+    return (os.getenv("SITE_MODE") or "").strip().lower() == "soon"
+
+
 def _send(handler: BaseHTTPRequestHandler, status: int, payload: dict) -> None:
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status)
@@ -32,6 +44,10 @@ def _send(handler: BaseHTTPRequestHandler, status: int, payload: dict) -> None:
 
 def _static(handler: BaseHTTPRequestHandler, path: str) -> bool:
     rel = path.lstrip("/") or "index.html"
+    if holding():
+        # Everything that is not the API resolves to the same page, so no
+        # route of the terminal is reachable by typing it.
+        rel = "soon.html"
     target = (WEB / rel).resolve()
     if not str(target).startswith(str(WEB.resolve())) or not target.is_file():
         target = WEB / "index.html"

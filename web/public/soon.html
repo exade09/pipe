@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0908" />
+    <meta name="description" content="Pipe" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Pipe</title>
+    <style>
+      :root { --bg: #000; --copper: #e8802a; --hi: #ffc46b; --type: #f2f2f2; --dim: #4a443e; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; background: var(--bg); color: var(--type);
+        font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+        display: grid; place-items: center; overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* one copper wash off the top left, the same light every card uses */
+      body::before {
+        content: ""; position: fixed; inset: 0; pointer-events: none;
+        background: radial-gradient(60% 50% at 22% 0%, rgba(232, 128, 42, 0.16), transparent 70%);
+      }
+      main { position: relative; text-align: center; padding: 24px; }
+      .mark { display: block; margin: 0 auto 26px; }
+      h1 {
+        margin: 0; font-size: clamp(56px, 18vw, 148px); font-weight: 700;
+        letter-spacing: 0.16em; text-indent: 0.16em; line-height: 1;
+        background: linear-gradient(135deg, #ffd694, var(--copper));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .rule {
+        width: min(280px, 70vw); height: 1px; margin: 30px auto 0;
+        background: linear-gradient(90deg, transparent, var(--copper), transparent);
+        opacity: 0.6;
+      }
+      .name { margin: 26px 0 0; font-size: 12px; letter-spacing: 0.44em; text-indent: 0.44em; color: var(--dim); }
+      a { margin-top: 22px; display: inline-flex; color: var(--dim); text-decoration: none; transition: color .15s ease; }
+      a:hover { color: var(--type); }
+      a svg { width: 16px; height: 16px; fill: currentColor; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg class="mark" width="40" height="40" viewBox="0 0 512 512" aria-hidden="true">
+        <defs>
+          <linearGradient id="c" gradientUnits="userSpaceOnUse" x1="100" y1="80" x2="400" y2="440">
+            <stop offset="0" stop-color="#FFD694" />
+            <stop offset="0.4" stop-color="#FFC46B" />
+            <stop offset="1" stop-color="#E8802A" />
+          </linearGradient>
+        </defs>
+        <path d="M157 148 L285 256 L157 364" fill="none" stroke="url(#c)" stroke-width="58" stroke-linecap="round" stroke-linejoin="round" />
+        <rect x="329" y="188" width="56" height="176" rx="16" fill="url(#c)" />
+      </svg>
+      <h1>SOON</h1>
+      <div class="rule"></div>
+      <p class="name">PIPE</p>
+      <a href="https://x.com/pipeterminal" target="_blank" rel="noreferrer" aria-label="Pipe on X">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.9 2H22l-6.77 7.74L23.2 22H17l-4.86-6.35L6.58 22H3.47l7.22-8.25L3.05 2H9.4l4.39 5.8L18.9 2Zm-1.09 17.84h1.72L8.46 4.05H6.62l11.19 15.79Z" /></svg>
+      </a>
+    </main>
+  </body>
+</html>
